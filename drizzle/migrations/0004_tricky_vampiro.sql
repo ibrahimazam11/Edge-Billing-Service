@@ -1,0 +1,1 @@
+ALTER TABLE "subscriptions" ALTER COLUMN "next_billing_date" DROP NOT NULL;

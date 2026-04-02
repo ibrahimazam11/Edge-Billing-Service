@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: billing-postgres
+    environment:
+      POSTGRES_DB: billing_service
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5433:5432'
+    volumes:
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d billing_service']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: billing-localstack
+    environment:
+      SERVICES: sqs,sns,cloudwatch,events,s3
+      DEFAULT_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - '4566:4566'
+    volumes:
+      - ./localstack:/etc/localstack/init/ready.d
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:4566/_localstack/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  stripe-mock:
+    image: stripe/stripe-mock:latest
+    container_name: billing-stripe-mock
+    ports:
+      - '12111:12111'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:12111/v1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  wiremock:
+    image: wiremock/wiremock:3.13.0
+    container_name: billing-wiremock
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./test/wiremock:/home/wiremock
+    command: --verbose --global-response-templating
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/__admin/health']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
+  localstack_data:

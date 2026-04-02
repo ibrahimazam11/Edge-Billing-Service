@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPathPattern": "/v71/payments/.*/refunds"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "pspReference": "ADYEN_REFUND_PSP_001",
+      "paymentPspReference": "{{request.pathSegments.[2]}}",
+      "status": "received"
+    },
+    "transformers": ["response-template"]
+  }
+}

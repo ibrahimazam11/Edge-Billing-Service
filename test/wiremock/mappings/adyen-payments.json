@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPath": "/v71/payments"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "pspReference": "ADYEN_PSP_{{randomValue type='UUID'}}",
+      "resultCode": "Authorised",
+      "merchantReference": "{{jsonPath request.body '$.reference'}}"
+    },
+    "transformers": ["response-template"]
+  }
+}
