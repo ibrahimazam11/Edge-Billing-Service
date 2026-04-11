@@ -11,12 +11,14 @@ import type { PaginatedResult } from "../common/dto/pagination.dto";
 import type { CreatePaymentMethodDto } from "./dto/create-payment-method.dto";
 import type { PaymentMethodResponseDto } from "./dto/payment-method-response.dto";
 import type { PaymentMethodQueryDto } from "./dto/payment-method-query.dto";
+import type { SetupIntentResponseDto } from "./dto/setup-intent-response.dto";
 import {
   PAYMENT_METHOD_TYPE_CARD,
   PAYMENT_METHOD_TYPE_BANK_ACCOUNT,
 } from "../common/constants/payment-method-types";
 import { PaymentMethodsRepository } from "./payment-methods.repository";
 import { GatewayAssignmentsRepository } from "./gateway-assignments.repository";
+import type { SetupIntentGateway } from "../gateway/gateway.interface";
 
 @Injectable()
 export class PaymentMethodsService {
@@ -260,6 +262,223 @@ export class PaymentMethodsService {
     });
 
     return this.toResponseDto(updated);
+  }
+
+  // --- Setup Intent operations ---
+
+  async createBankAccountSetup(
+    customerId: string,
+    input: {
+      routingNumber: string;
+      accountNumber: string;
+      accountHolderType: "individual" | "company";
+      accountType: "checking" | "savings";
+      accountHolderName?: string;
+    },
+    correlationId?: string,
+  ): Promise<SetupIntentResponseDto> {
+    const { customer, gatewayCustomerId, gateway } =
+      await this.resolveSetupContext(customerId);
+
+    const result = await gateway.createBankAccountSetup({
+      customerId: gatewayCustomerId,
+      ...input,
+      // Use customer name/email for billing_details — required by Stripe for US bank accounts
+      accountHolderName: input.accountHolderName || customer.name,
+      billingEmail: customer.email,
+    });
+
+    this.logger.log({
+      message: "Bank account setup intent created",
+      setupIntentId: result.id,
+      customerId,
+      correlationId,
+    });
+
+    return this.toSetupIntentResponse(result);
+  }
+
+  async createFinancialConnectionsSetup(
+    customerId: string,
+    correlationId?: string,
+  ): Promise<SetupIntentResponseDto> {
+    const { customer, gatewayCustomerId, gateway } =
+      await this.resolveSetupContext(customerId);
+
+    const result = await gateway.createFinancialConnectionsSetup({
+      customerId: gatewayCustomerId,
+    });
+
+    this.logger.log({
+      message: "Financial connections setup intent created",
+      setupIntentId: result.id,
+      customerId,
+      correlationId,
+    });
+
+    return this.toSetupIntentResponse(result);
+  }
+
+  async createCardSetup(
+    customerId: string,
+    correlationId?: string,
+  ): Promise<SetupIntentResponseDto> {
+    const { customer, gatewayCustomerId, gateway } =
+      await this.resolveSetupContext(customerId);
+
+    const result = await gateway.createCardSetup({
+      customerId: gatewayCustomerId,
+    });
+
+    this.logger.log({
+      message: "Card setup intent created",
+      setupIntentId: result.id,
+      customerId,
+      correlationId,
+    });
+
+    return this.toSetupIntentResponse(result);
+  }
+
+  async confirmSetupAndAttach(
+    customerId: string,
+    setupIntentId: string,
+    correlationId?: string,
+  ): Promise<PaymentMethodResponseDto> {
+    const { customer, gatewayCustomerId, gateway } =
+      await this.resolveSetupContext(customerId);
+
+    // Retrieve SI first — if already confirmed (manual ACH with confirm:true), skip confirm call
+    let result = await gateway.retrieveSetupIntent({ setupIntentId });
+
+    if (result.status !== "succeeded") {
+      result = await gateway.confirmSetup({ setupIntentId });
+    }
+
+    if (!result.paymentMethodId) {
+      throw new BusinessRuleViolationException(
+        `SetupIntent ${setupIntentId} has no payment method after confirmation`,
+      );
+    }
+
+    // Detach old default PM if exists (one PM at a time, matching monolith behavior)
+    const existingDefault =
+      await this.paymentMethodsRepository.getDefaultPaymentMethod(customerId);
+
+    if (existingDefault) {
+      const pmGateway = this.gatewayRegistry.getAdapter(
+        existingDefault.gatewayProvider as GatewayProvider,
+      );
+      await pmGateway.detachPaymentMethod(
+        existingDefault.stripePaymentMethodId,
+      );
+      await this.paymentMethodsRepository.updateStatus(
+        existingDefault.id,
+        "detached",
+        { isDefault: false },
+      );
+    }
+
+    // Set as default on gateway
+    await this.gatewayRegistry
+      .getAdapter(GatewayProvider.Stripe)
+      .setDefaultPaymentMethod(gatewayCustomerId, result.paymentMethodId);
+
+    // Fetch PM details from gateway
+    const pmList = await this.gatewayRegistry
+      .getAdapter(GatewayProvider.Stripe)
+      .listPaymentMethods(gatewayCustomerId);
+    const pmDetail = pmList.find((pm) => pm.id === result.paymentMethodId);
+
+    const id = generateId();
+    const now = new Date();
+
+    const created = await this.paymentMethodsRepository.create({
+      id,
+      customerId,
+      stripePaymentMethodId: result.paymentMethodId,
+      type:
+        pmDetail?.type === "card"
+          ? PAYMENT_METHOD_TYPE_CARD
+          : PAYMENT_METHOD_TYPE_BANK_ACCOUNT,
+      isDefault: true,
+      lastFour: pmDetail?.last4 ?? null,
+      brand: pmDetail?.brand ?? null,
+      bankName: pmDetail?.bankName ?? null,
+      expiryMonth: pmDetail?.expiryMonth ?? null,
+      expiryYear: pmDetail?.expiryYear ?? null,
+      gatewayProvider: GatewayProvider.Stripe,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    this.logger.log({
+      message: "Setup intent confirmed and payment method attached",
+      setupIntentId,
+      paymentMethodId: result.paymentMethodId,
+      customerId,
+      correlationId,
+    });
+
+    return this.toResponseDto(created);
+  }
+
+  async verifySetupMicrodeposits(
+    customerId: string,
+    setupIntentId: string,
+    amounts: [number, number],
+    correlationId?: string,
+  ): Promise<SetupIntentResponseDto> {
+    const { gateway } = await this.resolveSetupContext(customerId);
+
+    const result = await gateway.verifyMicrodeposits({
+      setupIntentId,
+      amounts,
+    });
+
+    this.logger.log({
+      message: "Microdeposits verified",
+      setupIntentId,
+      customerId,
+      correlationId,
+    });
+
+    return this.toSetupIntentResponse(result);
+  }
+
+  private async resolveSetupContext(customerId: string): Promise<{
+    customer: { stripeCustomerId: string | null; name: string; email: string };
+    gatewayCustomerId: string;
+    gateway: SetupIntentGateway;
+  }> {
+    const customer = await this.customersService.findById(customerId);
+    if (!customer) {
+      throw new CustomerNotFoundException(customerId);
+    }
+
+    const gatewayCustomerId = await this.resolveGatewayCustomerId(
+      customerId,
+      GatewayProvider.Stripe,
+      customer,
+    );
+
+    const gateway = this.gatewayRegistry.getAdapter(
+      GatewayProvider.Stripe,
+    ) as unknown as SetupIntentGateway;
+
+    return { customer, gatewayCustomerId, gateway };
+  }
+
+  private toSetupIntentResponse(
+    result: import("../gateway/gateway.types").SetupIntentResult,
+  ): SetupIntentResponseDto {
+    return {
+      setupIntentId: result.id,
+      clientSecret: result.clientSecret,
+      status: result.status,
+      paymentMethodId: result.paymentMethodId,
+    };
   }
 
   private async resolveCustomerGateway(

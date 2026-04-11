@@ -8,15 +8,22 @@ import type { SubscriptionsService } from "../../../subscriptions/subscriptions.
 import type {
   CustomerCreatedPayload,
   CustomerUpdatedPayload,
+  InvoiceCreatePayload,
   PayrollCalculatedPayload,
+  SubscriptionCreatePayload,
+  SurchargeConfigUpdatedPayload,
   StripeWebhookReceivedPayload,
   AdyenWebhookReceivedPayload,
 } from "../contracts/inbound-events";
+import type { InvoicesService } from "../../../invoices/invoices.service";
 import { GatewayProvider } from "../../../common/enums/gateway-provider.enum";
 import type { WebhookProcessingService } from "../../../webhooks/webhook-processing.service";
+import type { SurchargeConfigService } from "../../../surcharges/surcharge-config.service";
 
 export const CUSTOMERS_SERVICE = Symbol("CUSTOMERS_SERVICE");
 export const SUBSCRIPTIONS_SERVICE = Symbol("SUBSCRIPTIONS_SERVICE");
+export const INVOICES_SERVICE = Symbol("INVOICES_SERVICE_MONOLITH");
+export const SURCHARGE_CONFIG_SERVICE = Symbol("SURCHARGE_CONFIG_SERVICE");
 export const WEBHOOK_PROCESSING_SERVICE = Symbol("WEBHOOK_PROCESSING_SERVICE");
 
 @Injectable()
@@ -34,6 +41,12 @@ export class MonolithEventsConsumer {
     @Optional()
     @Inject(WEBHOOK_PROCESSING_SERVICE)
     private readonly webhookProcessingService?: WebhookProcessingService,
+    @Optional()
+    @Inject(SURCHARGE_CONFIG_SERVICE)
+    private readonly surchargeConfigService?: SurchargeConfigService,
+    @Optional()
+    @Inject(INVOICES_SERVICE)
+    private readonly invoicesService?: InvoicesService,
   ) {}
 
   @SqsMessageHandler("monolith-inbound", false)
@@ -95,9 +108,27 @@ export class MonolithEventsConsumer {
           correlationId,
         );
         break;
+      case "invoice.create":
+        await this.handleInvoiceCreate(
+          envelope.payload as InvoiceCreatePayload,
+          correlationId,
+        );
+        break;
       case "payroll.calculated":
         await this.handlePayrollCalculated(
           envelope.payload as PayrollCalculatedPayload,
+          correlationId,
+        );
+        break;
+      case "subscription.create":
+        await this.handleSubscriptionCreate(
+          envelope.payload as SubscriptionCreatePayload,
+          correlationId,
+        );
+        break;
+      case "surcharge-config.updated":
+        await this.handleSurchargeConfigUpdated(
+          envelope.payload as SurchargeConfigUpdatedPayload,
           correlationId,
         );
         break;
@@ -166,6 +197,45 @@ export class MonolithEventsConsumer {
     await this.customersService.updateFromEvent(payload, correlationId);
   }
 
+  private async handleInvoiceCreate(
+    payload: InvoiceCreatePayload,
+    correlationId: string,
+  ): Promise<void> {
+    if (!this.customersService) {
+      throw new Error(
+        "CustomersService not available — cannot process invoice.create",
+      );
+    }
+    if (!this.invoicesService) {
+      throw new Error(
+        "InvoicesService not available — cannot process invoice.create",
+      );
+    }
+
+    const customer = await this.customersService.findByMonolithId(
+      payload.monolithCustomerId,
+    );
+
+    if (!customer) {
+      this.logger.warn({
+        message: "Customer not found for invoice.create event",
+        monolithCustomerId: payload.monolithCustomerId,
+        correlationId,
+      });
+      return;
+    }
+
+    await this.invoicesService.createFromEvent(payload, customer.id, correlationId);
+
+    this.logger.log({
+      message: "Invoice created from monolith event",
+      customerId: customer.id,
+      type: payload.type,
+      totalAmountCents: payload.totalAmountCents,
+      correlationId,
+    });
+  }
+
   private async handlePayrollCalculated(
     payload: PayrollCalculatedPayload,
     correlationId: string,
@@ -195,26 +265,114 @@ export class MonolithEventsConsumer {
       );
     }
 
-    const updatedCount = await this.subscriptionsService.updatePricing(
+    // Update subscription pricing
+    await this.subscriptionsService.updatePricing(
       customer.id,
-      payload.amountCents,
+      payload.totalAmountCents,
       correlationId,
     );
 
-    if (updatedCount === 0) {
-      this.logger.warn({
-        message: "No active/paused subscriptions found for pricing update",
-        customerId: customer.id,
+    // Update open invoice line items with latest employee breakdown
+    if (payload.employees?.length && this.invoicesService) {
+      await this.invoicesService.updateOpenInvoiceLineItems(
+        customer.id,
+        payload.employees,
+        payload.totalAmountCents,
         correlationId,
-      });
-    } else {
-      this.logger.log({
-        message: "Payroll pricing update applied",
-        customerId: customer.id,
-        updatedCount,
-        correlationId,
-      });
+      );
     }
+
+    this.logger.log({
+      message: "Payroll pricing and invoice line items updated",
+      customerId: customer.id,
+      employeeCount: payload.employees?.length ?? 0,
+      totalAmountCents: payload.totalAmountCents,
+      correlationId,
+    });
+  }
+
+  private async handleSubscriptionCreate(
+    payload: SubscriptionCreatePayload,
+    correlationId: string,
+  ): Promise<void> {
+    if (!this.customersService) {
+      throw new Error(
+        "CustomersService not available — cannot process subscription.create",
+      );
+    }
+    if (!this.subscriptionsService) {
+      throw new Error(
+        "SubscriptionsService not available — cannot process subscription.create",
+      );
+    }
+
+    const customer = await this.customersService.findByMonolithId(
+      payload.monolithCustomerId,
+    );
+
+    if (!customer) {
+      this.logger.warn({
+        message: "Customer not found for subscription.create event",
+        monolithCustomerId: payload.monolithCustomerId,
+        correlationId,
+      });
+      return;
+    }
+
+    await this.subscriptionsService.createFromEvent(
+      payload,
+      customer.id,
+      correlationId,
+    );
+
+    this.logger.log({
+      message: "Subscription created from monolith event",
+      customerId: customer.id,
+      monolithCustomerId: payload.monolithCustomerId,
+      correlationId,
+    });
+  }
+
+  private async handleSurchargeConfigUpdated(
+    payload: SurchargeConfigUpdatedPayload,
+    correlationId: string,
+  ): Promise<void> {
+    if (!this.customersService) {
+      throw new Error(
+        "CustomersService not available — cannot process surcharge-config.updated",
+      );
+    }
+    if (!this.surchargeConfigService) {
+      throw new Error(
+        "SurchargeConfigService not available — cannot process surcharge-config.updated",
+      );
+    }
+
+    const customer = await this.customersService.findByMonolithId(
+      payload.monolithCustomerId,
+    );
+
+    if (!customer) {
+      this.logger.warn({
+        message: "Customer not found for surcharge config event",
+        monolithCustomerId: payload.monolithCustomerId,
+        correlationId,
+      });
+      return;
+    }
+
+    await this.surchargeConfigService.upsertConfig(customer.id, {
+      allowCreditCard: payload.allowCreditCard,
+      surchargeType: payload.surchargeType,
+      surchargeValue: payload.surchargeValue,
+    });
+
+    this.logger.log({
+      message: "Surcharge config updated",
+      customerId: customer.id,
+      allowCreditCard: payload.allowCreditCard,
+      correlationId,
+    });
   }
 
   private async handleStripeWebhookReceived(

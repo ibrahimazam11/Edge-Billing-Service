@@ -6,6 +6,7 @@ import { ChargesModule } from "../charges/charges.module";
 import { CreditsModule } from "../credits/credits.module";
 import { DualWriteModule } from "../migration/dual-write.module";
 import { SubscriptionsModule } from "../subscriptions/subscriptions.module";
+import { CustomersModule } from "../customers/customers.module";
 import { ChargesService } from "../charges/charges.service";
 import { InvoicesRepository } from "./invoices.repository";
 import { InvoicesService, CHARGES_SERVICE } from "./invoices.service";
@@ -17,9 +18,10 @@ import { InvoicesController } from "./invoices.controller";
     LedgerModule,
     CreditsModule,
     DualWriteModule,
-    SubscriptionsModule,
+    forwardRef(() => SubscriptionsModule),
     forwardRef(() => SqsIntegrationModule),
     forwardRef(() => ChargesModule),
+    forwardRef(() => CustomersModule),
   ],
   controllers: [InvoicesController],
   providers: [

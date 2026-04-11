@@ -26,6 +26,7 @@ describe("SqsProducerService", () => {
   const validPayload: PaymentSucceededPayload = {
     invoiceId: "inv-1",
     customerId: "cust-1",
+    monolithCustomerId: "mono-cust-1",
     amountCents: 1000,
     currency: "USD",
     paymentMethodId: "pm-1",
@@ -58,6 +59,7 @@ describe("SqsProducerService", () => {
       {
         invoiceId: "inv-1",
         customerId: "cust-1",
+        monolithCustomerId: "mono-cust-1",
         totalAmountCents: 5000,
         currency: "USD",
         billingPeriodStart: "2026-01-01",
@@ -81,6 +83,7 @@ describe("SqsProducerService", () => {
       {
         invoiceId: "inv-1",
         customerId: "cust-1",
+        monolithCustomerId: "mono-cust-1",
         amountCents: 1000,
         currency: "USD",
         failureReason: "card_declined",

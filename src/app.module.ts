@@ -32,8 +32,10 @@ import { FeatureFlagsModule } from "./feature-flags/feature-flags.module";
 import { SurchargesModule } from "./surcharges/surcharges.module";
 import { MigrationModule } from "./migration/migration.module";
 import { monolithDatabaseConfig } from "./config/monolith-database.config";
+import { monolithConfig } from "./config/monolith.config";
 import { AdminModule } from "./admin/admin.module";
 import { RefundsModule } from "./refunds/refunds.module";
+import { MonolithApiModule } from "./integration/monolith-api/monolith-api.module";
 
 @Module({
   imports: [
@@ -51,6 +53,7 @@ import { RefundsModule } from "./refunds/refunds.module";
         dunningConfig,
         ...(process.env.MONOLITH_DATABASE_HOST ? [monolithDatabaseConfig] : []),
         ...(process.env.ADYEN_API_KEY ? [adyenConfig] : []),
+        ...(process.env.MONOLITH_API_BASE_URL ? [monolithConfig] : []),
       ],
     }),
     DatabaseModule,
@@ -73,6 +76,7 @@ import { RefundsModule } from "./refunds/refunds.module";
     MigrationModule,
     AdminModule,
     RefundsModule,
+    MonolithApiModule,
   ],
   providers: [
     {

@@ -53,6 +53,7 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     filters: {
       customerId?: string;
       status?: string;
+      type?: string;
       startDate?: string;
       endDate?: string;
       cursor?: string;
@@ -66,6 +67,9 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     }
     if (filters.status) {
       conditions.push(eq(invoices.status, filters.status));
+    }
+    if (filters.type) {
+      conditions.push(eq(invoices.type, filters.type));
     }
     if (filters.startDate) {
       conditions.push(gte(invoices.createdAt, new Date(filters.startDate)));
@@ -94,7 +98,7 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       .from(invoices)
       .where(
         and(
-          isNull(invoices.subscriptionId),
+          inArray(invoices.type, ["onboarding", "one_time"]),
           eq(invoices.status, "draft"),
           lte(invoices.dueDate, scheduledDate),
         ),
@@ -138,6 +142,40 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     tx?: TransactionClient,
   ): Promise<void> {
     await this.conn(tx).insert(invoiceLineItems).values(data);
+  }
+
+  async createLineItems(
+    data: NewInvoiceLineItem[],
+    tx?: TransactionClient,
+  ): Promise<void> {
+    if (data.length === 0) return;
+    await this.conn(tx).insert(invoiceLineItems).values(data);
+  }
+
+  async deleteLineItemsByInvoiceId(
+    invoiceId: string,
+    tx?: TransactionClient,
+  ): Promise<void> {
+    await this.conn(tx)
+      .delete(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoiceId));
+  }
+
+  async findOpenByCustomerId(
+    customerId: string,
+  ): Promise<Invoice | null> {
+    const [row] = await this.db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          inArray(invoices.status, ["draft", "finalized"]),
+        ),
+      )
+      .orderBy(invoices.createdAt)
+      .limit(1);
+    return row ?? null;
   }
 
   async updateWithConcurrencyCheck(

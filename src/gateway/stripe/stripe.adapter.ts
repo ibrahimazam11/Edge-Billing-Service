@@ -1,18 +1,24 @@
 import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Stripe from "stripe";
-import type { PaymentGateway } from "../gateway.interface";
+import type { PaymentGateway, SetupIntentGateway } from "../gateway.interface";
 import type {
   CustomerResult,
   PaymentMethodResult,
   ChargeResult,
   RefundResult,
   BalanceTransactionResult,
+  SetupIntentResult,
   CreateCustomerInput,
   UpdateCustomerInput,
   CreateChargeInput,
   CreateRefundInput,
   GetBalanceTransactionsInput,
+  CreateBankAccountSetupInput,
+  CreateFinancialConnectionsSetupInput,
+  CreateCardSetupInput,
+  ConfirmSetupInput,
+  VerifyMicrodepositsInput,
 } from "../gateway.types";
 import {
   mapStripeCustomer,
@@ -46,7 +52,7 @@ const STRIPE_EVENT_MAP: Record<string, NormalizedWebhookEventType> = {
   "charge.refunded": WEBHOOK_REFUND_COMPLETED,
 };
 
-export class StripeAdapter implements PaymentGateway {
+export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
   private readonly logger = new Logger(StripeAdapter.name);
   private readonly stripe: Stripe;
   private readonly webhookSecret: string;
@@ -232,6 +238,119 @@ export class StripeAdapter implements PaymentGateway {
     }
 
     return allTransactions;
+  }
+
+  // --- Setup Intent lifecycle ---
+
+  async createBankAccountSetup(
+    input: CreateBankAccountSetupInput,
+  ): Promise<SetupIntentResult> {
+    return this.executeWithResilience("createBankAccountSetup", async () => {
+      const si = await this.stripe.setupIntents.create({
+        customer: input.customerId,
+        payment_method_types: ["us_bank_account"],
+        payment_method_data: {
+          type: "us_bank_account",
+          us_bank_account: {
+            routing_number: input.routingNumber,
+            account_number: input.accountNumber,
+            account_holder_type: input.accountHolderType,
+            account_type: input.accountType,
+          },
+          billing_details: {
+            name: input.accountHolderName ?? undefined,
+            email: input.billingEmail ?? undefined,
+          },
+        },
+        payment_method_options: {
+          us_bank_account: { verification_method: "skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod },
+        },
+        mandate_data: {
+          customer_acceptance: {
+            type: "offline",
+            accepted_at: Math.floor(Date.now() / 1000),
+          },
+        },
+        confirm: true,
+      });
+      return this.mapSetupIntent(si);
+    });
+  }
+
+  async createFinancialConnectionsSetup(
+    input: CreateFinancialConnectionsSetupInput,
+  ): Promise<SetupIntentResult> {
+    return this.executeWithResilience(
+      "createFinancialConnectionsSetup",
+      async () => {
+        const si = await this.stripe.setupIntents.create({
+          customer: input.customerId,
+          payment_method_types: ["us_bank_account"],
+          payment_method_options: {
+            us_bank_account: {
+              financial_connections: { permissions: ["payment_method"] },
+              verification_method: "instant_or_skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod,
+            },
+          },
+        });
+        return this.mapSetupIntent(si);
+      },
+    );
+  }
+
+  async createCardSetup(input: CreateCardSetupInput): Promise<SetupIntentResult> {
+    return this.executeWithResilience("createCardSetup", async () => {
+      const si = await this.stripe.setupIntents.create({
+        customer: input.customerId,
+        payment_method_types: ["card"],
+        usage: "off_session",
+      });
+      return this.mapSetupIntent(si);
+    });
+  }
+
+  async retrieveSetupIntent(input: ConfirmSetupInput): Promise<SetupIntentResult> {
+    return this.executeWithResilience("retrieveSetupIntent", async () => {
+      const si = await this.stripe.setupIntents.retrieve(input.setupIntentId);
+      return this.mapSetupIntent(si);
+    });
+  }
+
+  async confirmSetup(input: ConfirmSetupInput): Promise<SetupIntentResult> {
+    return this.executeWithResilience("confirmSetup", async () => {
+      const si = await this.stripe.setupIntents.confirm(input.setupIntentId, {
+        mandate_data: { customer_acceptance: { type: "offline" } },
+      });
+      return this.mapSetupIntent(si);
+    });
+  }
+
+  async verifyMicrodeposits(
+    input: VerifyMicrodepositsInput,
+  ): Promise<SetupIntentResult> {
+    return this.executeWithResilience("verifyMicrodeposits", async () => {
+      const si = await this.stripe.setupIntents.verifyMicrodeposits(
+        input.setupIntentId,
+        { amounts: input.amounts },
+      );
+      return this.mapSetupIntent(si);
+    });
+  }
+
+  private mapSetupIntent(si: Stripe.SetupIntent): SetupIntentResult {
+    return {
+      id: si.id,
+      clientSecret: si.client_secret ?? "",
+      status: si.status,
+      paymentMethodId:
+        typeof si.payment_method === "string"
+          ? si.payment_method
+          : si.payment_method?.id ?? null,
+      mandateId:
+        typeof si.mandate === "string"
+          ? si.mandate
+          : si.mandate?.id ?? null,
+    };
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await

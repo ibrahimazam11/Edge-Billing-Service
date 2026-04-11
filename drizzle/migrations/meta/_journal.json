@@ -155,6 +155,34 @@
       "when": 1771418366395,
       "tag": "0021_strange_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1775682544959,
+      "tag": "0022_brown_supernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1775687225755,
+      "tag": "0023_romantic_trish_tilby",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1775857803315,
+      "tag": "0024_free_glorian",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1775868876221,
+      "tag": "0025_eminent_banshee",
+      "breakpoints": true
     }
   ]
 }

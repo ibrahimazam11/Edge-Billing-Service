@@ -7,6 +7,7 @@ import { LedgerService } from "../ledger/ledger.service";
 import { CreditsService } from "../credits/credits.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { DRIZZLE_PROVIDER } from "../database/database.provider";
+import { CustomersService } from "../customers/customers.service";
 import { StateTransitionException } from "../common/exceptions/billing.exception";
 import { InvoiceNotFoundException } from "./invoice-not-found.exception";
 import { InvoiceAlreadyPaidException } from "./exceptions/invoice-already-paid.exception";
@@ -36,6 +37,7 @@ const mockInvoiceRow = {
   id: "inv-123",
   customerId: "cust-123",
   subscriptionId: "sub-123",
+  type: "recurring",
   status: "finalized",
   totalAmountCents: 5000,
   currency: "usd",
@@ -56,6 +58,7 @@ const mockLineItemRow = {
   description: "standard-monthly - monthly subscription",
   amountCents: 5000,
   quantity: 1,
+  breakdown: null,
   createdAt: now,
 };
 
@@ -78,6 +81,14 @@ const mockLedgerService = {
 
 const mockSqsProducerService = {
   publish: jest.fn().mockResolvedValue(undefined),
+};
+
+const mockCustomersService = {
+  findById: jest.fn().mockResolvedValue({
+    id: "cust-123",
+    chargeDay: 15,
+    isPrepaid: true,
+  }),
 };
 
 describe("InvoicesService", () => {
@@ -118,6 +129,7 @@ describe("InvoicesService", () => {
         { provide: DRIZZLE_PROVIDER, useValue: mockDb },
         { provide: LedgerService, useValue: mockLedgerService },
         { provide: SqsProducerService, useValue: mockSqsProducerService },
+        { provide: CustomersService, useValue: mockCustomersService },
       ],
     }).compile();
 
@@ -349,6 +361,7 @@ describe("InvoicesService", () => {
           { provide: LedgerService, useValue: mockLedgerService },
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -743,6 +756,7 @@ describe("InvoicesService", () => {
           { provide: LedgerService, useValue: mockLedgerService },
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -846,6 +860,7 @@ describe("InvoicesService", () => {
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -976,6 +991,7 @@ describe("InvoicesService", () => {
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 

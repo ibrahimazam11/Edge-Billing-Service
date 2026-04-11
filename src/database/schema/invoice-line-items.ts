@@ -4,6 +4,7 @@ import {
   varchar,
   text,
   integer,
+  jsonb,
   timestamp,
   index,
 } from "drizzle-orm/pg-core";
@@ -20,6 +21,7 @@ export const invoiceLineItems = pgTable(
     description: text("description").notNull(),
     amountCents: integer("amount_cents").notNull(),
     quantity: integer("quantity").notNull().default(1),
+    breakdown: jsonb("breakdown"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

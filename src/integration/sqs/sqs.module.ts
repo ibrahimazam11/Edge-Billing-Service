@@ -11,6 +11,8 @@ import {
   CUSTOMERS_SERVICE,
   SUBSCRIPTIONS_SERVICE,
   WEBHOOK_PROCESSING_SERVICE,
+  SURCHARGE_CONFIG_SERVICE,
+  INVOICES_SERVICE as MONOLITH_INVOICES_SERVICE,
 } from "./consumers/monolith-events.consumer";
 import {
   SchedulerEventsConsumer,
@@ -30,6 +32,8 @@ import { DunningModule } from "../../dunning/dunning.module";
 import { DunningService } from "../../dunning/dunning.service";
 import { ReconciliationModule } from "../../reconciliation/reconciliation.module";
 import { ReconciliationService } from "../../reconciliation/reconciliation.service";
+import { SurchargesModule } from "../../surcharges/surcharges.module";
+import { SurchargeConfigService } from "../../surcharges/surcharge-config.service";
 
 @Module({
   imports: [
@@ -39,6 +43,7 @@ import { ReconciliationService } from "../../reconciliation/reconciliation.servi
     forwardRef(() => WebhooksModule),
     forwardRef(() => DunningModule),
     forwardRef(() => ReconciliationModule),
+    forwardRef(() => SurchargesModule),
     NestSqsModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -110,6 +115,14 @@ import { ReconciliationService } from "../../reconciliation/reconciliation.servi
     {
       provide: RECONCILIATION_SERVICE,
       useExisting: ReconciliationService,
+    },
+    {
+      provide: MONOLITH_INVOICES_SERVICE,
+      useExisting: InvoicesService,
+    },
+    {
+      provide: SURCHARGE_CONFIG_SERVICE,
+      useExisting: SurchargeConfigService,
     },
   ],
   exports: [SqsProducerService, IdempotencyService],

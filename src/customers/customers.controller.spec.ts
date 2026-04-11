@@ -11,6 +11,8 @@ const mockCustomerResponse: CustomerResponseDto = {
   name: "Test Customer",
   email: "test@example.com",
   status: "active",
+  chargeDay: 1,
+  isPrepaid: false,
   metadata: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",

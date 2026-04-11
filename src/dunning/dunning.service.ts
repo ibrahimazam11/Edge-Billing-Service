@@ -18,6 +18,7 @@ import { PaymentMethodsService } from "../payment-methods/payment-methods.servic
 import { InvoiceAlreadyPaidException } from "../charges/invoice-already-paid.exception";
 import { DunningAttemptsRepository } from "./dunning.repository";
 import { InvoicesRepository } from "../invoices/invoices.repository";
+import { CustomersRepository } from "../customers/customers.repository";
 
 export type DunningAttemptStatus =
   | "scheduled"
@@ -68,6 +69,8 @@ export class DunningService {
     private readonly dualWriteService?: DualWriteService,
     @Optional()
     private readonly paymentMethodsService?: PaymentMethodsService,
+    @Optional()
+    private readonly customersRepository?: CustomersRepository,
   ) {
     const schedule = this.configService.get<number[]>(
       "dunning.retryScheduleDays",
@@ -472,12 +475,16 @@ export class DunningService {
       const dualWriteMetadata =
         await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);
 
+      const dunningCustomer = await this.customersRepository?.findById(invoice.customerId);
+      const dunningMonolithId = dunningCustomer?.monolithCustomerId ?? "";
+
       try {
         await this.sqsProducerService.publish(
           "dunning.escalated",
           {
             invoiceId,
             customerId: invoice.customerId,
+            monolithCustomerId: dunningMonolithId,
             totalAttempts: attempts.length,
             failureHistory,
             amountCents: invoice.totalAmountCents,

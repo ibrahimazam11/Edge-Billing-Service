@@ -90,3 +90,40 @@ export interface GetBalanceTransactionsInput {
   createdLte?: number;
   createdLt?: number;
 }
+
+// --- Setup Intent types (payment-processor agnostic) ---
+
+export interface SetupIntentResult {
+  id: string;
+  clientSecret: string;
+  status: string;
+  paymentMethodId: string | null;
+  mandateId: string | null;
+}
+
+export interface CreateBankAccountSetupInput {
+  customerId: string;
+  accountHolderName?: string;
+  billingEmail?: string;
+  routingNumber: string;
+  accountNumber: string;
+  accountHolderType: "individual" | "company";
+  accountType: "checking" | "savings";
+}
+
+export interface CreateFinancialConnectionsSetupInput {
+  customerId: string;
+}
+
+export interface CreateCardSetupInput {
+  customerId: string;
+}
+
+export interface ConfirmSetupInput {
+  setupIntentId: string;
+}
+
+export interface VerifyMicrodepositsInput {
+  setupIntentId: string;
+  amounts: [number, number];
+}

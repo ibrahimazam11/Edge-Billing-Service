@@ -161,136 +161,188 @@ export class ChargesService {
         description: `Invoice ${invoiceId}`,
       });
 
-      // 7a. SUCCESS: transaction { update charge, update invoice, create ledger entry }
-      await this.db.transaction(async (tx) => {
-        await this.chargesRepository.updateStatus(
+      // 7a. Branch on gateway result status
+      if (gatewayResult.status === "succeeded") {
+        // Synchronous success (cards): update charge, invoice, ledger in one transaction
+        await this.db.transaction(async (tx) => {
+          await this.chargesRepository.updateStatus(
+            chargeId,
+            {
+              status: "succeeded",
+              stripePaymentIntentId: gatewayResult.id,
+              updatedAt: new Date(),
+            },
+            tx,
+          );
+
+          validateTransition(
+            invoice.status as InvoiceStatus,
+            "paid" as InvoiceStatus,
+            INVOICE_TRANSITIONS,
+          );
+
+          await this.invoicesRepository.update(
+            invoiceId,
+            {
+              status: "paid",
+              paidAt: new Date(),
+              updatedAt: new Date(),
+            },
+            tx,
+          );
+
+          await this.ledgerService.recordPaymentSucceeded(
+            chargeId,
+            invoice.totalAmountCents,
+            invoice.currency,
+            correlationId,
+            tx,
+          );
+        });
+
+        this.logger.log({
+          message: "Payment succeeded (synchronous)",
           chargeId,
-          {
-            status: "succeeded",
-            stripePaymentIntentId: gatewayResult.id,
-            updatedAt: new Date(),
-          },
-          tx,
-        );
-
-        validateTransition(
-          invoice.status as InvoiceStatus,
-          "paid" as InvoiceStatus,
-          INVOICE_TRANSITIONS,
-        );
-
-        await this.invoicesRepository.update(
           invoiceId,
-          {
-            status: "paid",
-            paidAt: new Date(),
-            updatedAt: new Date(),
-          },
-          tx,
-        );
-
-        await this.ledgerService.recordPaymentSucceeded(
-          chargeId,
-          invoice.totalAmountCents,
-          invoice.currency,
+          stripePaymentIntentId: gatewayResult.id,
+          amountCents: invoice.totalAmountCents,
           correlationId,
-          tx,
-        );
-      });
+        });
 
-      this.logger.log({
-        message: "Payment succeeded",
-        chargeId,
-        invoiceId,
-        stripePaymentIntentId: gatewayResult.id,
-        amountCents: invoice.totalAmountCents,
-        correlationId,
-      });
+        // Advance subscription billing period (outside transaction)
+        if (this.subscriptionsService && invoice.subscriptionId) {
+          try {
+            await this.subscriptionsService.advanceBillingPeriod(
+              invoice.subscriptionId,
+              correlationId,
+            );
+          } catch (advanceError) {
+            this.logger.warn({
+              message: "Failed to advance billing period",
+              subscriptionId: invoice.subscriptionId,
+              error:
+                advanceError instanceof Error
+                  ? advanceError.message
+                  : String(advanceError),
+              correlationId,
+            });
+          }
+        }
 
-      // Advance subscription billing period (outside transaction)
-      if (this.subscriptionsService && invoice.subscriptionId) {
+        // Publish events (outside transaction)
+        const dualWriteMetadata =
+          await this.dualWriteService?.getDualWriteMetadata(
+            invoice.customerId,
+          );
+
         try {
-          await this.subscriptionsService.advanceBillingPeriod(
-            invoice.subscriptionId,
-            correlationId,
-          );
-        } catch (advanceError) {
-          this.logger.warn({
-            message: "Failed to advance billing period",
-            subscriptionId: invoice.subscriptionId,
-            error:
-              advanceError instanceof Error
-                ? advanceError.message
-                : String(advanceError),
-            correlationId,
-          });
-        }
-      }
-
-      // Publish events (outside transaction)
-      const dualWriteMetadata =
-        await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);
-
-      try {
-        await this.sqsProducerService.publish(
-          "payment.succeeded",
-          {
-            invoiceId,
-            customerId: invoice.customerId,
-            amountCents: invoice.totalAmountCents,
-            currency: invoice.currency,
-            paymentMethodId: pm.id,
-            stripePaymentIntentId: gatewayResult.id,
-          },
-          correlationId,
-          dualWriteMetadata,
-        );
-      } catch (publishError) {
-        if (dualWriteMetadata) {
-          await this.dualWriteService?.logDualWriteFailure(
-            invoice.customerId,
+          await this.sqsProducerService.publish(
             "payment.succeeded",
-            { invoiceId, amountCents: invoice.totalAmountCents },
-            publishError,
+            {
+              invoiceId,
+              customerId: invoice.customerId,
+              monolithCustomerId: customer.monolithCustomerId,
+              amountCents: invoice.totalAmountCents,
+              currency: invoice.currency,
+              paymentMethodId: pm.id,
+              stripePaymentIntentId: gatewayResult.id,
+            },
             correlationId,
+            dualWriteMetadata,
           );
-        } else {
-          throw publishError;
+        } catch (publishError) {
+          if (dualWriteMetadata) {
+            await this.dualWriteService?.logDualWriteFailure(
+              invoice.customerId,
+              "payment.succeeded",
+              { invoiceId, amountCents: invoice.totalAmountCents },
+              publishError,
+              correlationId,
+            );
+          } else {
+            throw publishError;
+          }
         }
-      }
 
-      try {
-        await this.sqsProducerService.publish(
-          "invoice.paid",
-          {
-            invoiceId,
-            customerId: invoice.customerId,
-            totalAmountCents: invoice.totalAmountCents,
-            currency: invoice.currency,
-            paidAt: new Date().toISOString(),
-          },
-          correlationId,
-          dualWriteMetadata,
-        );
-      } catch (publishError) {
-        if (dualWriteMetadata) {
-          await this.dualWriteService?.logDualWriteFailure(
-            invoice.customerId,
+        try {
+          await this.sqsProducerService.publish(
             "invoice.paid",
-            { invoiceId, totalAmountCents: invoice.totalAmountCents },
-            publishError,
+            {
+              invoiceId,
+              customerId: invoice.customerId,
+              monolithCustomerId: customer.monolithCustomerId,
+              totalAmountCents: invoice.totalAmountCents,
+              currency: invoice.currency,
+              paidAt: new Date().toISOString(),
+            },
             correlationId,
+            dualWriteMetadata,
           );
-        } else {
-          throw publishError;
+        } catch (publishError) {
+          if (dualWriteMetadata) {
+            await this.dualWriteService?.logDualWriteFailure(
+              invoice.customerId,
+              "invoice.paid",
+              { invoiceId, totalAmountCents: invoice.totalAmountCents },
+              publishError,
+              correlationId,
+            );
+          } else {
+            throw publishError;
+          }
         }
-      }
 
-      return {
-        chargeId,
-        status: "succeeded",
-        stripePaymentIntentId: gatewayResult.id,
-      };
+        return {
+          chargeId,
+          status: "succeeded" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      } else if (gatewayResult.status === "pending") {
+        // Async payment (ACH): record PI ID, leave invoice as finalized — webhook will complete
+        await this.chargesRepository.updateStatus(chargeId, {
+          stripePaymentIntentId: gatewayResult.id,
+          updatedAt: new Date(),
+        });
+
+        this.logger.log({
+          message: "Payment pending (async) — waiting for webhook",
+          chargeId,
+          invoiceId,
+          stripePaymentIntentId: gatewayResult.id,
+          amountCents: invoice.totalAmountCents,
+          correlationId,
+        });
+
+        return {
+          chargeId,
+          status: "pending" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      } else {
+        // Gateway returned failed status
+        await this.chargesRepository.updateStatus(chargeId, {
+          status: "failed",
+          stripePaymentIntentId: gatewayResult.id,
+          failureReason:
+            gatewayResult.failureMessage || "Payment declined by gateway",
+          updatedAt: new Date(),
+        });
+
+        this.logger.warn({
+          message: "Payment failed (gateway declined)",
+          chargeId,
+          invoiceId,
+          stripePaymentIntentId: gatewayResult.id,
+          failureReason: gatewayResult.failureMessage,
+          correlationId,
+        });
+
+        return {
+          chargeId,
+          status: "failed" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      }
     } catch (error) {
       // 7b. FAILURE: update charge to failed, publish payment.failed
       const failureReason =
@@ -320,6 +372,7 @@ export class ChargesService {
           {
             invoiceId,
             customerId: invoice.customerId,
+            monolithCustomerId: customer.monolithCustomerId,
             amountCents: invoice.totalAmountCents,
             currency: invoice.currency,
             failureReason,
@@ -517,6 +570,7 @@ export class ChargesService {
     const chargeResult = await this.executePaymentForInvoiceWithPaymentMethod(
       invoiceId,
       dto.customerId,
+      customer.monolithCustomerId,
       dto.amountCents,
       paymentMethodId,
       stripePaymentMethodId,
@@ -636,6 +690,7 @@ export class ChargesService {
   private async executePaymentForInvoiceWithPaymentMethod(
     invoiceId: string,
     customerId: string,
+    monolithCustomerId: string,
     amountCents: number,
     paymentMethodId: string,
     stripePaymentMethodId: string,
@@ -687,115 +742,165 @@ export class ChargesService {
         description: `One-time charge: Invoice ${invoiceId}`,
       });
 
-      await this.db.transaction(async (tx) => {
-        await this.chargesRepository.updateStatus(
-          chargeId,
-          {
-            status: "succeeded",
-            stripePaymentIntentId: gatewayResult.id,
-            updatedAt: new Date(),
-          },
-          tx,
-        );
+      if (gatewayResult.status === "succeeded") {
+        // Synchronous success (cards): update charge, invoice, ledger in one transaction
+        await this.db.transaction(async (tx) => {
+          await this.chargesRepository.updateStatus(
+            chargeId,
+            {
+              status: "succeeded",
+              stripePaymentIntentId: gatewayResult.id,
+              updatedAt: new Date(),
+            },
+            tx,
+          );
 
-        validateTransition(
-          "finalized" as InvoiceStatus,
-          "paid" as InvoiceStatus,
-          INVOICE_TRANSITIONS,
-        );
+          validateTransition(
+            "finalized" as InvoiceStatus,
+            "paid" as InvoiceStatus,
+            INVOICE_TRANSITIONS,
+          );
 
-        await this.invoicesRepository.update(
-          invoiceId,
-          {
-            status: "paid",
-            paidAt: new Date(),
-            updatedAt: new Date(),
-          },
-          tx,
-        );
-
-        await this.ledgerService.recordPaymentSucceeded(
-          chargeId,
-          amountCents,
-          "usd",
-          correlationId,
-          tx,
-        );
-      });
-
-      this.logger.log({
-        message: "One-time charge payment succeeded",
-        chargeId,
-        invoiceId,
-        stripePaymentIntentId: gatewayResult.id,
-        amountCents,
-        correlationId,
-      });
-
-      // Publish events outside transaction
-      const otcDualWriteMetadata =
-        await this.dualWriteService?.getDualWriteMetadata(customerId);
-
-      try {
-        await this.sqsProducerService.publish(
-          "payment.succeeded",
-          {
+          await this.invoicesRepository.update(
             invoiceId,
-            customerId,
+            {
+              status: "paid",
+              paidAt: new Date(),
+              updatedAt: new Date(),
+            },
+            tx,
+          );
+
+          await this.ledgerService.recordPaymentSucceeded(
+            chargeId,
             amountCents,
-            currency: "usd",
-            paymentMethodId,
-            stripePaymentIntentId: gatewayResult.id,
-          },
+            "usd",
+            correlationId,
+            tx,
+          );
+        });
+
+        this.logger.log({
+          message: "One-time charge payment succeeded (synchronous)",
+          chargeId,
+          invoiceId,
+          stripePaymentIntentId: gatewayResult.id,
+          amountCents,
           correlationId,
-          otcDualWriteMetadata,
-        );
-      } catch (publishError) {
-        if (otcDualWriteMetadata) {
-          await this.dualWriteService?.logDualWriteFailure(
-            customerId,
+        });
+
+        // Publish events outside transaction
+        const otcDualWriteMetadata =
+          await this.dualWriteService?.getDualWriteMetadata(customerId);
+
+        try {
+          await this.sqsProducerService.publish(
             "payment.succeeded",
-            { invoiceId, amountCents },
-            publishError,
+            {
+              invoiceId,
+              customerId,
+              monolithCustomerId,
+              amountCents,
+              currency: "usd",
+              paymentMethodId,
+              stripePaymentIntentId: gatewayResult.id,
+            },
             correlationId,
+            otcDualWriteMetadata,
           );
-        } else {
-          throw publishError;
+        } catch (publishError) {
+          if (otcDualWriteMetadata) {
+            await this.dualWriteService?.logDualWriteFailure(
+              customerId,
+              "payment.succeeded",
+              { invoiceId, amountCents },
+              publishError,
+              correlationId,
+            );
+          } else {
+            throw publishError;
+          }
         }
-      }
 
-      try {
-        await this.sqsProducerService.publish(
-          "invoice.paid",
-          {
-            invoiceId,
-            customerId,
-            totalAmountCents: amountCents,
-            currency: "usd",
-            paidAt: new Date().toISOString(),
-          },
-          correlationId,
-          otcDualWriteMetadata,
-        );
-      } catch (publishError) {
-        if (otcDualWriteMetadata) {
-          await this.dualWriteService?.logDualWriteFailure(
-            customerId,
+        try {
+          await this.sqsProducerService.publish(
             "invoice.paid",
-            { invoiceId, totalAmountCents: amountCents },
-            publishError,
+            {
+              invoiceId,
+              customerId,
+              monolithCustomerId,
+              totalAmountCents: amountCents,
+              currency: "usd",
+              paidAt: new Date().toISOString(),
+            },
             correlationId,
+            otcDualWriteMetadata,
           );
-        } else {
-          throw publishError;
+        } catch (publishError) {
+          if (otcDualWriteMetadata) {
+            await this.dualWriteService?.logDualWriteFailure(
+              customerId,
+              "invoice.paid",
+              { invoiceId, totalAmountCents: amountCents },
+              publishError,
+              correlationId,
+            );
+          } else {
+            throw publishError;
+          }
         }
-      }
 
-      return {
-        chargeId,
-        status: "succeeded",
-        stripePaymentIntentId: gatewayResult.id,
-      };
+        return {
+          chargeId,
+          status: "succeeded" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      } else if (gatewayResult.status === "pending") {
+        // Async payment (ACH): record PI ID, leave invoice as finalized — webhook will complete
+        await this.chargesRepository.updateStatus(chargeId, {
+          stripePaymentIntentId: gatewayResult.id,
+          updatedAt: new Date(),
+        });
+
+        this.logger.log({
+          message: "One-time charge payment pending (async) — waiting for webhook",
+          chargeId,
+          invoiceId,
+          stripePaymentIntentId: gatewayResult.id,
+          amountCents,
+          correlationId,
+        });
+
+        return {
+          chargeId,
+          status: "pending" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      } else {
+        // Gateway returned failed status
+        await this.chargesRepository.updateStatus(chargeId, {
+          status: "failed",
+          stripePaymentIntentId: gatewayResult.id,
+          failureReason:
+            gatewayResult.failureMessage || "Payment declined by gateway",
+          updatedAt: new Date(),
+        });
+
+        this.logger.warn({
+          message: "One-time charge payment failed (gateway declined)",
+          chargeId,
+          invoiceId,
+          stripePaymentIntentId: gatewayResult.id,
+          failureReason: gatewayResult.failureMessage,
+          correlationId,
+        });
+
+        return {
+          chargeId,
+          status: "failed" as const,
+          stripePaymentIntentId: gatewayResult.id,
+        };
+      }
     } catch (error) {
       const failureReason =
         error instanceof Error ? error.message : String(error);
@@ -823,6 +928,7 @@ export class ChargesService {
           {
             invoiceId,
             customerId,
+            monolithCustomerId,
             amountCents,
             currency: "usd",
             failureReason,
@@ -868,6 +974,7 @@ export class ChargesService {
       id: invoice.id,
       customerId: invoice.customerId,
       subscriptionId: invoice.subscriptionId,
+      type: invoice.type,
       status: invoice.status,
       totalAmountCents: invoice.totalAmountCents,
       currency: invoice.currency,
@@ -885,6 +992,7 @@ export class ChargesService {
           description: item.description,
           amountCents: item.amountCents,
           quantity: item.quantity,
+          breakdown: item.breakdown as Record<string, number> | null,
           createdAt: item.createdAt.toISOString(),
         }),
       ),

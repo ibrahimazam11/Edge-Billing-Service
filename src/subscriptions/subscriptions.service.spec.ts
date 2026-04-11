@@ -5,6 +5,8 @@ import { SubscriptionsRepository } from "./subscriptions.repository";
 import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
+import { InvoicesService } from "../invoices/invoices.service";
+import { DualWriteService } from "../migration/dual-write.service";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
 import { NoPaymentMethodException } from "../common/exceptions/no-payment-method.exception";
@@ -38,6 +40,17 @@ const mockSqsProducerService = {
   publish: jest.fn().mockResolvedValue(undefined),
 };
 
+const mockInvoicesService = {
+  findOpenByCustomerId: jest.fn().mockResolvedValue(null),
+  createDraftInvoice: jest.fn().mockResolvedValue(undefined),
+  updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
+  voidOpenInvoicesForCustomer: jest.fn().mockResolvedValue(0),
+};
+
+const mockDualWriteService = {
+  getDualWriteMetadata: jest.fn().mockResolvedValue(null),
+};
+
 const mockCustomer = {
   id: "cust-123",
   monolithCustomerId: "mono-123",
@@ -45,6 +58,8 @@ const mockCustomer = {
   name: "Test Customer",
   email: "test@example.com",
   status: "active",
+  chargeDay: 15,
+  isPrepaid: true,
   metadata: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -106,6 +121,7 @@ describe("SubscriptionsService", () => {
         { provide: CustomersService, useValue: mockCustomersService },
         { provide: PaymentMethodsService, useValue: mockPaymentMethodsService },
         { provide: SqsProducerService, useValue: mockSqsProducerService },
+        { provide: InvoicesService, useValue: mockInvoicesService },
       ],
     }).compile();
 
@@ -221,8 +237,8 @@ describe("SubscriptionsService", () => {
       expect(createCall.billingInterval).toBe("monthly");
     });
 
-    it("should set next_billing_date equal to billing_period_end", async () => {
-      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+    it("should set next_billing_date to invoice due date based on chargeDay", async () => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer); // chargeDay=15, isPrepaid=true
       mockPaymentMethodsService.findAll.mockResolvedValue({
         data: [mockPaymentMethod],
         cursor: null,
@@ -230,11 +246,12 @@ describe("SubscriptionsService", () => {
       });
       mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
 
-      await service.create(createDto);
+      await service.create(createDto); // billingStartDate = 2026-03-01
 
       const createCall = mockSubscriptionsRepo.create.mock
         .calls[0][0] as Record<string, unknown>;
-      expect(createCall.nextBillingDate).toEqual(createCall.billingPeriodEnd);
+      // chargeDay=15, prepaid, billingStart=March 1 → dueDate = March 15
+      expect(createCall.nextBillingDate).toEqual(new Date("2026-03-15T00:00:00.000Z"));
     });
   });
 
