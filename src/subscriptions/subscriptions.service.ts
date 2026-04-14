@@ -222,7 +222,7 @@ export class SubscriptionsService {
       );
     } else {
       if (existingOpenInvoice) {
-        await this.invoicesService.voidOpenInvoicesForCustomer(billingCustomerId, correlationId);
+        await this.invoicesService.voidDraftInvoicesForCustomer(billingCustomerId, correlationId);
       }
       await this.invoicesService.createDraftInvoice(
         {
@@ -372,8 +372,9 @@ export class SubscriptionsService {
     let updateData: Partial<typeof subscriptions.$inferSelect>;
 
     if (targetState === "paused" || targetState === "canceled") {
-      // Void any open draft/finalized invoices to prevent stale charges
-      await this.invoicesService.voidOpenInvoicesForCustomer(existing.customerId, correlationId);
+      // Void unfinalized drafts; finalized invoices represent real debt and stay
+      // in their lifecycle (ACH settles via webhook, dunning retries failed charges).
+      await this.invoicesService.voidDraftInvoicesForCustomer(existing.customerId, correlationId);
 
       updateData = {
         status: targetState,

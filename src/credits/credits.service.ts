@@ -188,11 +188,13 @@ export class CreditsService {
       tx,
     );
 
-    // Update invoice total
+    // Update invoice total and stamp credit amount into metadata so downstream
+    // readers (e.g. the monolith PDF adapter) can render the "Credit Applied" row.
     await this.invoicesRepository.update(
       invoiceId,
       {
         totalAmountCents: newTotal,
+        metadata: { creditAdjustmentCents: creditToApply },
         updatedAt: new Date(),
       },
       tx,

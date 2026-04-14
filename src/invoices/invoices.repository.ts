@@ -178,6 +178,23 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     return row ?? null;
   }
 
+  async findDraftByCustomerId(
+    customerId: string,
+  ): Promise<Invoice | null> {
+    const [row] = await this.db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          eq(invoices.status, "draft"),
+        ),
+      )
+      .orderBy(invoices.createdAt)
+      .limit(1);
+    return row ?? null;
+  }
+
   async updateWithConcurrencyCheck(
     id: string,
     data: Partial<NewInvoice>,

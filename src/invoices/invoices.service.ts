@@ -420,28 +420,29 @@ export class InvoicesService {
   }
 
   /**
-   * Void any open (draft/finalized) invoices for a customer.
-   * Called when a subscription is paused to prevent stale invoices from being charged.
+   * Void any draft invoices for a customer. Called when a subscription is paused/cancelled.
+   * Finalized invoices are intentionally left alone — they represent real debt (payment
+   * may be in-flight, e.g. ACH; dunning may still recover failed charges). Parity with
+   * monolith, which never cancels outstanding invoices on churn.
    */
-  async voidOpenInvoicesForCustomer(
+  async voidDraftInvoicesForCustomer(
     customerId: string,
     correlationId?: string,
   ): Promise<number> {
-    const openInvoice = await this.invoicesRepository.findOpenByCustomerId(customerId);
-    if (!openInvoice) return 0;
+    const draftInvoice = await this.invoicesRepository.findDraftByCustomerId(customerId);
+    if (!draftInvoice) return 0;
 
     const now = new Date();
-    await this.invoicesRepository.update(openInvoice.id, {
+    await this.invoicesRepository.update(draftInvoice.id, {
       status: "void",
       voidedAt: now,
       updatedAt: now,
     });
 
     this.logger.log({
-      message: "Open invoice voided on subscription pause",
-      invoiceId: openInvoice.id,
+      message: "Draft invoice voided on subscription pause/cancel",
+      invoiceId: draftInvoice.id,
       customerId,
-      previousStatus: openInvoice.status,
       correlationId,
     });
 

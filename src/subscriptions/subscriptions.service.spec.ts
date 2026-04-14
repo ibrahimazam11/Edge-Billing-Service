@@ -44,7 +44,7 @@ const mockInvoicesService = {
   findOpenByCustomerId: jest.fn().mockResolvedValue(null),
   createDraftInvoice: jest.fn().mockResolvedValue(undefined),
   updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
-  voidOpenInvoicesForCustomer: jest.fn().mockResolvedValue(0),
+  voidDraftInvoicesForCustomer: jest.fn().mockResolvedValue(0),
 };
 
 const mockDualWriteService = {
