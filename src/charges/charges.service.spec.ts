@@ -324,6 +324,11 @@ describe("ChargesService", () => {
         paymentMethodId: "pm_stripe_1",
         idempotencyKey: "inv_inv-uuid-1_att_1",
         description: "Invoice inv-uuid-1",
+        metadata: {
+          billingCustomerId: "cust-uuid-1",
+          billingInvoiceId: "inv-uuid-1",
+          monolithCustomerId: "mono-1",
+        },
       });
     });
 
@@ -1164,7 +1169,7 @@ describe("ChargesService", () => {
       customerId: "cust-uuid-1",
       amountCents: 15000,
       description: "Onboarding implementation fee",
-      scheduledDate: "2026-03-01",
+      scheduledDate: "2027-03-01",
     };
     const correlationId = "corr-1";
 
@@ -1176,9 +1181,9 @@ describe("ChargesService", () => {
       status: "draft",
       totalAmountCents: 15000,
       currency: "usd",
-      billingPeriodStart: new Date("2026-03-01"),
-      billingPeriodEnd: new Date("2026-03-01"),
-      dueDate: new Date("2026-03-01"),
+      billingPeriodStart: new Date("2027-03-01"),
+      billingPeriodEnd: new Date("2027-03-01"),
+      dueDate: new Date("2027-03-01"),
       paidAt: null,
       voidedAt: null,
       metadata: null,
@@ -1248,7 +1253,7 @@ describe("ChargesService", () => {
       const result = await service.createOnboardingCharge(dto, correlationId);
 
       // The dueDate should be the scheduled date
-      expect(result.invoice.dueDate).toContain("2026-03-01");
+      expect(result.invoice.dueDate).toContain("2027-03-01");
     });
   });
 
@@ -1285,6 +1290,132 @@ describe("ChargesService", () => {
       const result = await service.findByInvoiceId("inv-uuid-1");
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe("metadata on PaymentIntent", () => {
+    describe("executePaymentForInvoice — metadata", () => {
+      beforeEach(() => {
+        invoicesRepo.findById.mockResolvedValue(makeInvoiceRow());
+        chargesRepo.createWithIdempotency.mockResolvedValue({
+          charge: makeChargeRow(),
+          isDuplicate: false,
+        });
+        chargesRepo.updateStatus.mockResolvedValue(undefined);
+        invoicesRepo.update.mockResolvedValue(
+          makeInvoiceRow({ status: "paid" }),
+        );
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse(),
+        );
+        mockCustomersService.findById.mockResolvedValue(
+          makeCustomerResponse(),
+        );
+        mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
+          "cus_stripe_1",
+        );
+        mockGateway.createCharge.mockResolvedValue(makeGatewayChargeResult());
+      });
+
+      it("should include billingCustomerId, billingInvoiceId, and monolithCustomerId in gateway metadata", async () => {
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-meta-1");
+
+        expect(mockGateway.createCharge).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: {
+              billingCustomerId: "cust-uuid-1",
+              billingInvoiceId: "inv-uuid-1",
+              monolithCustomerId: "mono-1",
+            },
+          }),
+        );
+      });
+
+      it("should pass empty string for monolithCustomerId when customer has null monolithCustomerId", async () => {
+        mockCustomersService.findById.mockResolvedValue(
+          makeCustomerResponse({ monolithCustomerId: null }),
+        );
+
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-meta-2");
+
+        expect(mockGateway.createCharge).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              monolithCustomerId: "",
+            }),
+          }),
+        );
+      });
+    });
+
+    describe("executePaymentForInvoiceWithPaymentMethod (via createOneTimeCharge) — metadata", () => {
+      const dto = {
+        customerId: "cust-uuid-1",
+        amountCents: 5000,
+        description: "Setup fee",
+      };
+      const idempotencyKey = "meta-test-idem";
+      const correlationId = "corr-meta-ot";
+
+      beforeEach(() => {
+        mockCustomersService.findById.mockResolvedValue(
+          makeCustomerResponse(),
+        );
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse(),
+        );
+        mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
+          "cus_stripe_1",
+        );
+        mockGateway.createCharge.mockResolvedValue(makeGatewayChargeResult());
+        chargesRepo.findByIdempotencyKey.mockResolvedValue(null);
+        chargesRepo.createWithIdempotency.mockResolvedValue({
+          charge: makeChargeRow(),
+          isDuplicate: false,
+        });
+        chargesRepo.findById.mockResolvedValue(makeChargeRow());
+        invoicesRepo.update.mockResolvedValue(
+          makeInvoiceRow({ status: "paid" }),
+        );
+        invoicesRepo.findByIdWithLineItems.mockResolvedValue({
+          invoice: makeInvoiceRow({ status: "paid" }),
+          lineItems: [
+            {
+              id: "li-1",
+              invoiceId: "inv-uuid-1",
+              type: "one_time_charge",
+              description: "Setup fee",
+              amountCents: 5000,
+              quantity: 1,
+              breakdown: null,
+              createdAt: new Date(),
+            },
+          ],
+        });
+      });
+
+      it("should include billingCustomerId, billingInvoiceId, and monolithCustomerId in gateway metadata", async () => {
+        await service.createOneTimeCharge(dto, idempotencyKey, correlationId);
+
+        expect(mockGateway.createCharge).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: {
+              billingCustomerId: "cust-uuid-1",
+              billingInvoiceId: expect.any(String),
+              monolithCustomerId: "mono-1",
+            },
+          }),
+        );
+      });
+
+      it("should pass monolithCustomerId from customer record (not undefined)", async () => {
+        await service.createOneTimeCharge(dto, idempotencyKey, correlationId);
+
+        const gatewayCall = mockGateway.createCharge.mock.calls[0][0];
+        expect(gatewayCall.metadata.monolithCustomerId).toBe("mono-1");
+        expect(gatewayCall.metadata.billingCustomerId).toBe("cust-uuid-1");
+        expect(gatewayCall.metadata.billingInvoiceId).toBeTruthy();
+      });
     });
   });
 });

@@ -557,7 +557,7 @@ describe("SubscriptionsService", () => {
       expect(updateCall.status).toBe("canceled");
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
-      expect(updateCall.nextBillingDate).toBeUndefined();
+      expect(updateCall.nextBillingDate).toBeNull();
     });
 
     it("should publish subscription.state.changed event after DB update", async () => {
@@ -910,6 +910,179 @@ describe("SubscriptionsService", () => {
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
       expect(updateCall.nextBillingDate).toBeUndefined();
+    });
+  });
+
+  describe("buildEmployeeLineItems (via createFromEvent)", () => {
+    const makeSubscriptionPayload = (employees: Array<Record<string, unknown>>) => ({
+      monolithCustomerId: "mono-123",
+      planName: "standard-monthly",
+      amountCents: 10000,
+      billingStartDate: "2026-03-01T00:00:00.000Z",
+      onboardingDate: "2026-02-15T00:00:00.000Z",
+      employees,
+    });
+
+    beforeEach(() => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+      mockSubscriptionsRepo.findByCustomerAndStatuses.mockResolvedValue([]);
+      mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
+      mockSubscriptionsRepo.findById.mockResolvedValue(mockSubscriptionRow);
+      mockInvoicesService.findOpenByCustomerId.mockResolvedValue(null);
+    });
+
+    it("should set description to just employee name (no ' - Monthly Cost' suffix)", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-001",
+          employeeName: "John Doe",
+          customerCost: 5000,
+          salary: 4000,
+          platformFee: 500,
+          bonus: 300,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-1");
+
+      expect(mockInvoicesService.createDraftInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lineItems: expect.arrayContaining([
+            expect.objectContaining({
+              type: "employee_cost",
+              description: "John Doe",
+            }),
+          ]),
+        }),
+        "corr-emp-1",
+      );
+
+      // Verify no " - Monthly Cost" suffix
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.description).toBe("John Doe");
+      expect(lineItem.description).not.toContain(" - Monthly Cost");
+    });
+
+    it("should include employeeId in breakdown", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-002",
+          employeeName: "Jane Smith",
+          customerCost: 6000,
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-2");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.breakdown).toEqual(
+        expect.objectContaining({
+          employeeId: "emp-002",
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        }),
+      );
+    });
+
+    it("should produce one line item per employee with correct fields", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-a",
+          employeeName: "Alice",
+          customerCost: 3000,
+          salary: 2500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+        {
+          employeeId: "emp-b",
+          employeeName: "Bob",
+          customerCost: 4000,
+          salary: 3500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-3");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      expect(call.lineItems).toHaveLength(2);
+
+      const alice = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Alice",
+      );
+      const bob = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Bob",
+      );
+
+      expect(alice).toBeDefined();
+      expect(alice.breakdown.employeeId).toBe("emp-a");
+      expect(alice.amountCents).toBe(3000);
+
+      expect(bob).toBeDefined();
+      expect(bob.breakdown.employeeId).toBe("emp-b");
+      expect(bob.amountCents).toBe(4000);
+    });
+  });
+
+  describe("updateState — voidDraftInvoicesForCustomer on pause/cancel", () => {
+    const activeRow = { ...mockSubscriptionRow, status: "active" };
+
+    it("should call voidDraftInvoicesForCustomer (not voidOpenInvoicesForCustomer) on pause", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = {
+        ...activeRow,
+        status: "paused",
+        nextBillingDate: null,
+      };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState("sub-123", { status: "paused" }, "corr-pause");
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-pause");
+    });
+
+    it("should call voidDraftInvoicesForCustomer on cancel", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = { ...activeRow, status: "canceled" };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState(
+        "sub-123",
+        { status: "canceled" },
+        "corr-cancel",
+      );
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-cancel");
     });
   });
 });

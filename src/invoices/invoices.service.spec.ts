@@ -1028,4 +1028,103 @@ describe("InvoicesService", () => {
       ).not.toHaveBeenCalled();
     });
   });
+
+  describe("voidDraftInvoicesForCustomer", () => {
+    it("should void a draft invoice and return 1", async () => {
+      const draftInvoice = {
+        ...mockInvoiceRow,
+        id: "inv-draft-1",
+        status: "draft",
+      };
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(draftInvoice);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-1",
+      );
+
+      expect(count).toBe(1);
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-draft-1",
+        expect.objectContaining({
+          status: "void",
+          voidedAt: expect.any(Date),
+          updatedAt: expect.any(Date),
+        }),
+      );
+    });
+
+    it("should return 0 when no draft invoice exists", async () => {
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-2",
+      );
+
+      expect(count).toBe(0);
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenByCustomerId)", async () => {
+      // Simulate: only finalized invoices exist -> findDraftByCustomerId returns null
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-3",
+      );
+
+      expect(count).toBe(0);
+      // Verify it called findDraftByCustomerId (not findOpenByCustomerId)
+      expect(
+        (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
+      ).toHaveBeenCalledWith("cust-123");
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("should call findDraftByCustomerId on the repository", async () => {
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      await service.voidDraftInvoicesForCustomer("cust-456");
+
+      expect(
+        (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
+      ).toHaveBeenCalledWith("cust-456");
+    });
+
+    it("should log structured message when draft invoice is voided", async () => {
+      const draftInvoice = {
+        ...mockInvoiceRow,
+        id: "inv-draft-log",
+        status: "draft",
+      };
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(draftInvoice);
+
+      const logSpy = jest
+        .spyOn(Logger.prototype, "log")
+        .mockImplementation(() => {});
+
+      await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-log",
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Draft invoice voided on subscription pause/cancel",
+          invoiceId: "inv-draft-log",
+          customerId: "cust-123",
+          correlationId: "corr-void-log",
+        }),
+      );
+
+      logSpy.mockRestore();
+    });
+  });
 });

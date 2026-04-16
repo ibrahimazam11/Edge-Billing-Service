@@ -29,6 +29,7 @@ describe("CustomersController", () => {
       createFromEvent: jest.fn(),
       updateFromEvent: jest.fn(),
       findByMonolithId: jest.fn(),
+      findByStripeCustomerId: jest.fn(),
     };
 
     const module = await Test.createTestingModule({
@@ -132,6 +133,25 @@ describe("CustomersController", () => {
 
       expect(result.hasMore).toBe(true);
       expect(result.cursor).toBe("next-cursor-id");
+    });
+  });
+
+  describe("GET /v1/customers/by-stripe-id/:stripeCustomerId", () => {
+    it("should return customer when found by Stripe customer ID", async () => {
+      service.findByStripeCustomerId.mockResolvedValueOnce(mockCustomerResponse);
+
+      const result = await controller.findByStripeCustomerId("cus_stripe_123");
+
+      expect(result).toEqual(mockCustomerResponse);
+      expect(service.findByStripeCustomerId).toHaveBeenCalledWith("cus_stripe_123");
+    });
+
+    it("should throw CustomerNotFoundException when not found by Stripe customer ID", async () => {
+      service.findByStripeCustomerId.mockResolvedValueOnce(null);
+
+      await expect(
+        controller.findByStripeCustomerId("cus_nonexistent"),
+      ).rejects.toThrow(CustomerNotFoundException);
     });
   });
 });

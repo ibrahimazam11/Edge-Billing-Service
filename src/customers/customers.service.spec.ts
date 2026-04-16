@@ -32,6 +32,7 @@ describe("CustomersService", () => {
     repo = {
       findById: jest.fn(),
       findByMonolithId: jest.fn(),
+      findByStripeCustomerId: jest.fn(),
       findAll: jest.fn(),
       search: jest.fn(),
       create: jest.fn(),
@@ -93,7 +94,10 @@ describe("CustomersService", () => {
       expect(mockGateway.createCustomer).toHaveBeenCalledWith({
         email: "test@example.com",
         name: "Test Customer",
-        metadata: undefined,
+        metadata: {
+          billingCustomerId: expect.any(String),
+          monolithCustomerId: "mono-123",
+        },
       });
       expect(repo.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -135,7 +139,11 @@ describe("CustomersService", () => {
       expect(mockGateway.createCustomer).toHaveBeenCalledWith({
         email: "test@example.com",
         name: "Test Customer",
-        metadata: { plan: "premium" },
+        metadata: {
+          plan: "premium",
+          billingCustomerId: expect.any(String),
+          monolithCustomerId: "mono-123",
+        },
       });
     });
 
@@ -328,6 +336,89 @@ describe("CustomersService", () => {
       expect(result.data).toHaveLength(0);
       expect(result.hasMore).toBe(false);
       expect(result.cursor).toBeNull();
+    });
+  });
+
+  describe("createFromEvent — Stripe metadata", () => {
+    const payload = {
+      monolithCustomerId: "mono-123",
+      name: "Test Customer",
+      email: "test@example.com",
+    };
+
+    it("should pass billingCustomerId in Stripe metadata", async () => {
+      repo.findByMonolithId.mockResolvedValueOnce(null);
+      repo.create.mockResolvedValueOnce(mockCustomerRow);
+
+      await service.createFromEvent(payload, "corr-meta-1");
+
+      expect(mockGateway.createCustomer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            billingCustomerId: expect.any(String),
+          }),
+        }),
+      );
+
+      // billingCustomerId must be a non-empty UUID string
+      const call = mockGateway.createCustomer.mock.calls[0][0];
+      expect(call.metadata.billingCustomerId).toBeTruthy();
+      expect(typeof call.metadata.billingCustomerId).toBe("string");
+    });
+
+    it("should pass monolithCustomerId in Stripe metadata", async () => {
+      repo.findByMonolithId.mockResolvedValueOnce(null);
+      repo.create.mockResolvedValueOnce(mockCustomerRow);
+
+      await service.createFromEvent(payload, "corr-meta-2");
+
+      expect(mockGateway.createCustomer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            monolithCustomerId: "mono-123",
+          }),
+        }),
+      );
+    });
+
+    it("should generate billingCustomerId before calling gateway (not null/undefined)", async () => {
+      repo.findByMonolithId.mockResolvedValueOnce(null);
+      repo.create.mockResolvedValueOnce(mockCustomerRow);
+
+      await service.createFromEvent(payload, "corr-meta-3");
+
+      const call = mockGateway.createCustomer.mock.calls[0][0];
+      expect(call.metadata.billingCustomerId).not.toBeNull();
+      expect(call.metadata.billingCustomerId).not.toBeUndefined();
+      expect(call.metadata.billingCustomerId.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("findByStripeCustomerId", () => {
+    it("should return customer when found", async () => {
+      repo.findByStripeCustomerId.mockResolvedValueOnce(mockCustomerRow);
+
+      const result = await service.findByStripeCustomerId("cus_stripe_123");
+
+      expect(result).not.toBeNull();
+      expect(result!.stripeCustomerId).toBe("cus_stripe_123");
+      expect(result!.createdAt).toBe("2026-01-01T00:00:00.000Z");
+    });
+
+    it("should return null when not found", async () => {
+      repo.findByStripeCustomerId.mockResolvedValueOnce(null);
+
+      const result = await service.findByStripeCustomerId("cus_nonexistent");
+
+      expect(result).toBeNull();
+    });
+
+    it("should call repository findByStripeCustomerId with correct argument", async () => {
+      repo.findByStripeCustomerId.mockResolvedValueOnce(null);
+
+      await service.findByStripeCustomerId("cus_test_456");
+
+      expect(repo.findByStripeCustomerId).toHaveBeenCalledWith("cus_test_456");
     });
   });
 });

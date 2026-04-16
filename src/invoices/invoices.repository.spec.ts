@@ -505,6 +505,51 @@ describe("InvoicesRepository", () => {
     });
   });
 
+  describe("findDraftByCustomerId", () => {
+    it("should return draft invoice when one exists", async () => {
+      const draftInvoice = {
+        ...mockInvoiceRow,
+        id: "inv-draft-1",
+        status: "draft",
+      };
+      selectChain.limit.mockResolvedValueOnce([draftInvoice]);
+
+      const result = await repository.findDraftByCustomerId("cust-123");
+
+      expect(result).toEqual(draftInvoice);
+      expect(mockDb.select).toHaveBeenCalled();
+      expect(selectChain.from).toHaveBeenCalled();
+      expect(selectChain.where).toHaveBeenCalled();
+      expect(selectChain.orderBy).toHaveBeenCalled();
+      expect(selectChain.limit).toHaveBeenCalledWith(1);
+    });
+
+    it("should return null when only finalized invoices exist", async () => {
+      selectChain.limit.mockResolvedValueOnce([]);
+
+      const result = await repository.findDraftByCustomerId("cust-123");
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null when no invoices exist for customer", async () => {
+      selectChain.limit.mockResolvedValueOnce([]);
+
+      const result = await repository.findDraftByCustomerId("cust-no-invoices");
+
+      expect(result).toBeNull();
+      expect(mockDb.select).toHaveBeenCalled();
+    });
+
+    it("should query with limit 1", async () => {
+      selectChain.limit.mockResolvedValueOnce([]);
+
+      await repository.findDraftByCustomerId("cust-123");
+
+      expect(selectChain.limit).toHaveBeenCalledWith(1);
+    });
+  });
+
   describe("getBillingStatsForMigration", () => {
     it("should return billing stats for a customer and metadata key", async () => {
       mockDb.execute.mockResolvedValueOnce({
