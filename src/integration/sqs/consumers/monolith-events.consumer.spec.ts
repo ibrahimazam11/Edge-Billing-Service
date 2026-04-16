@@ -165,9 +165,10 @@ describe("MonolithEventsConsumer", () => {
   it("should route payroll.calculated events", async () => {
     const envelope = createEnvelope("payroll.calculated", {
       monolithCustomerId: "cust-1",
-      amountCents: 50000,
+      totalAmountCents: 50000,
       currency: "USD",
-      calculationDate: "2026-02-01",
+      payrollMonth: "2026-02",
+      employees: [],
     });
     const message = createSqsMessage(envelope);
 
@@ -365,9 +366,10 @@ describe("MonolithEventsConsumer", () => {
 
       const envelope = createEnvelope("payroll.calculated", {
         monolithCustomerId: "mono-cust-1",
-        amountCents: 75000,
+        totalAmountCents: 75000,
         currency: "usd",
-        calculationDate: "2026-02-01",
+        payrollMonth: "2026-02",
+        employees: [],
       });
       const message = createSqsMessage(envelope);
 
@@ -383,9 +385,10 @@ describe("MonolithEventsConsumer", () => {
   describe("payroll.calculated event handling", () => {
     const payrollPayload = {
       monolithCustomerId: "mono-cust-1",
-      amountCents: 75000,
+      totalAmountCents: 75000,
       currency: "usd",
-      calculationDate: "2026-02-01",
+      payrollMonth: "2026-02",
+      employees: [],
     };
 
     it("should process payroll event and call updatePricing with correct args", async () => {
@@ -432,7 +435,7 @@ describe("MonolithEventsConsumer", () => {
       expect(mockIdempotencyService.markProcessed).toHaveBeenCalled();
     });
 
-    it("should handle no active subscriptions — logs warning, no error thrown", async () => {
+    it("should handle no active subscriptions — logs success, no error thrown", async () => {
       mockCustomersService.findByMonolithId.mockResolvedValue({
         id: "cust-resolved",
       });
@@ -443,9 +446,9 @@ describe("MonolithEventsConsumer", () => {
 
       await consumer.handleMessage(message);
 
-      expect(warnSpy).toHaveBeenCalledWith(
+      expect(logSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: "No active/paused subscriptions found for pricing update",
+          message: "Payroll pricing and invoice line items updated",
           customerId: "cust-resolved",
         }),
       );
