@@ -257,6 +257,7 @@ export class SubscriptionsService {
    */
   private buildEmployeeLineItems(
     employees: Array<{
+      employeeId: string;
       employeeName: string;
       customerCost: number;
       salary: number;
@@ -268,10 +269,11 @@ export class SubscriptionsService {
   ) {
     return employees.map((emp) => ({
       type: "employee_cost",
-      description: `${emp.employeeName} - Monthly Cost`,
+      description: emp.employeeName,
       amountCents: emp.customerCost,
       quantity: 1,
       breakdown: {
+        employeeId: emp.employeeId,
         salary: emp.salary,
         platformFee: emp.platformFee,
         bonus: emp.bonus,

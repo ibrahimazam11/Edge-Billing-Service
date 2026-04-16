@@ -723,7 +723,7 @@ export class InvoicesService {
         description: string;
         amountCents: number;
         quantity: number;
-        breakdown?: Record<string, number> | null;
+        breakdown?: Record<string, number | string> | null;
       }>;
       totalAmountCents: number;
       currency: string;
@@ -913,10 +913,11 @@ export class InvoicesService {
       id: generateId(),
       invoiceId: openInvoice.id,
       type: "employee_cost",
-      description: `${emp.employeeName} - Monthly Cost`,
+      description: emp.employeeName,
       amountCents: emp.customerCost,
       quantity: 1,
       breakdown: {
+        employeeId: emp.employeeId,
         salary: emp.salary,
         platformFee: emp.platformFee,
         bonus: emp.bonus,

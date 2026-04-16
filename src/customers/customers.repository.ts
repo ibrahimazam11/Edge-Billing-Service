@@ -28,6 +28,15 @@ export class CustomersRepository extends BaseRepository<typeof customers> {
     return row ?? null;
   }
 
+  async findByStripeCustomerId(stripeCustomerId: string): Promise<Customer | null> {
+    const [row] = await this.db
+      .select()
+      .from(customers)
+      .where(eq(customers.stripeCustomerId, stripeCustomerId))
+      .limit(1);
+    return row ?? null;
+  }
+
   /**
    * Fetches `limit + 1` rows to enable cursor-based "has more" pagination.
    * Callers should check `results.length > limit` to determine if more rows exist.

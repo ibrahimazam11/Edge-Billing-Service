@@ -44,13 +44,17 @@ export class CustomersService {
       return existing;
     }
 
+    const id = generateId();
+
     const stripeCustomer = await this.gateway.createCustomer({
       email: payload.email,
       name: payload.name,
-      metadata: payload.metadata as Record<string, string> | undefined,
+      metadata: {
+        ...(payload.metadata as Record<string, string> | undefined),
+        billingCustomerId: id,
+        monolithCustomerId: payload.monolithCustomerId,
+      },
     });
-
-    const id = generateId();
     const now = new Date();
 
     const created = await this.customersRepository.create({
@@ -143,6 +147,14 @@ export class CustomersService {
   ): Promise<CustomerResponseDto | null> {
     const customer =
       await this.customersRepository.findByMonolithId(monolithCustomerId);
+    return customer ? this.toResponseDto(customer) : null;
+  }
+
+  async findByStripeCustomerId(
+    stripeCustomerId: string,
+  ): Promise<CustomerResponseDto | null> {
+    const customer =
+      await this.customersRepository.findByStripeCustomerId(stripeCustomerId);
     return customer ? this.toResponseDto(customer) : null;
   }
 

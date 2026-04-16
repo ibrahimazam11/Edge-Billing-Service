@@ -159,6 +159,11 @@ export class ChargesService {
         paymentMethodId: pm.stripePaymentMethodId,
         idempotencyKey,
         description: `Invoice ${invoiceId}`,
+        metadata: {
+          billingCustomerId: invoice.customerId,
+          billingInvoiceId: invoiceId,
+          monolithCustomerId: customer.monolithCustomerId ?? '',
+        },
       });
 
       // 7a. Branch on gateway result status
@@ -740,6 +745,11 @@ export class ChargesService {
         paymentMethodId: stripePaymentMethodId,
         idempotencyKey,
         description: `One-time charge: Invoice ${invoiceId}`,
+        metadata: {
+          billingCustomerId: customerId,
+          billingInvoiceId: invoiceId,
+          monolithCustomerId,
+        },
       });
 
       if (gatewayResult.status === "succeeded") {
