@@ -27,7 +27,6 @@ export interface PayrollEmployeeLineItem {
 
 export interface PayrollCalculatedPayload {
   monolithCustomerId: string;
-  payrollMonth: string;
   currency: string;
   totalAmountCents: number;
   employees: PayrollEmployeeLineItem[];

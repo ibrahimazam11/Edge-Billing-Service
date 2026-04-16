@@ -167,7 +167,7 @@ describe("MonolithEventsConsumer", () => {
       monolithCustomerId: "cust-1",
       totalAmountCents: 50000,
       currency: "USD",
-      payrollMonth: "2026-02",
+
       employees: [],
     });
     const message = createSqsMessage(envelope);
@@ -368,7 +368,7 @@ describe("MonolithEventsConsumer", () => {
         monolithCustomerId: "mono-cust-1",
         totalAmountCents: 75000,
         currency: "usd",
-        payrollMonth: "2026-02",
+  
         employees: [],
       });
       const message = createSqsMessage(envelope);
@@ -387,7 +387,7 @@ describe("MonolithEventsConsumer", () => {
       monolithCustomerId: "mono-cust-1",
       totalAmountCents: 75000,
       currency: "usd",
-      payrollMonth: "2026-02",
+
       employees: [],
     };
 
