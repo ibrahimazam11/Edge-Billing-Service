@@ -1157,11 +1157,16 @@ describe("ChargesService", () => {
   });
 
   describe("createOnboardingCharge", () => {
+    // 30 days ahead of "now" so the suite stays green regardless of when it runs.
+    const futureDate = new Date(Date.now() + 30 * 86400000)
+      .toISOString()
+      .split("T")[0];
+
     const dto = {
       customerId: "cust-uuid-1",
       amountCents: 15000,
       description: "Onboarding implementation fee",
-      scheduledDate: "2026-03-01",
+      scheduledDate: futureDate,
     };
     const correlationId = "corr-1";
 
@@ -1172,9 +1177,9 @@ describe("ChargesService", () => {
       status: "draft",
       totalAmountCents: 15000,
       currency: "usd",
-      billingPeriodStart: new Date("2026-03-01"),
-      billingPeriodEnd: new Date("2026-03-01"),
-      dueDate: new Date("2026-03-01"),
+      billingPeriodStart: new Date(futureDate),
+      billingPeriodEnd: new Date(futureDate),
+      dueDate: new Date(futureDate),
       paidAt: null,
       voidedAt: null,
       metadata: null,
@@ -1243,7 +1248,7 @@ describe("ChargesService", () => {
       const result = await service.createOnboardingCharge(dto, correlationId);
 
       // The dueDate should be the scheduled date
-      expect(result.invoice.dueDate).toContain("2026-03-01");
+      expect(result.invoice.dueDate).toContain(futureDate);
     });
   });
 
