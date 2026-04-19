@@ -1,0 +1,113 @@
+image: python:3.11-alpine
+
+definitions:
+  services:
+    docker:
+      memory: 3072
+  caches:
+    pnpm: $BITBUCKET_CLONE_DIR/.pnpm-store
+
+pipelines:
+  pull-requests:
+    '**':
+      - parallel:
+          - step:
+              name: Lint + Type Check
+              image: node:24-alpine
+              caches:
+                - pnpm
+              script:
+                - corepack enable && corepack prepare pnpm@latest --activate
+                - pnpm config set store-dir .pnpm-store
+                - pnpm install --frozen-lockfile
+                - pnpm lint
+                - pnpm tsc --noEmit
+
+          - step:
+              name: Unit Tests
+              image: node:24-alpine
+              caches:
+                - pnpm
+              script:
+                - corepack enable && corepack prepare pnpm@latest --activate
+                - pnpm config set store-dir .pnpm-store
+                - pnpm install --frozen-lockfile
+                - pnpm test
+
+  branches:
+    develop:
+      - step:
+          name: Build + Scan + Push (Staging)
+          services:
+            - docker
+          caches:
+            - docker
+          script:
+            - apk add --no-cache curl
+            - pip install awscli
+            - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
+            - export TAG=${BITBUCKET_COMMIT:0:7}
+
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws configure set default.region "us-east-1"
+            - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 082178185739.dkr.ecr.us-east-1.amazonaws.com
+
+            - docker build -t $IMAGE:$TAG -t $IMAGE:staging .
+
+            - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            - docker save $IMAGE:$TAG -o billing.tar
+            - trivy image --input billing.tar --severity CRITICAL,HIGH --exit-code 0 --ignore-unfixed --no-progress
+            - rm -f billing.tar
+
+            - docker push $IMAGE:$TAG
+            - docker push $IMAGE:staging
+
+      - step:
+          name: Deploy to Staging ECS
+          script:
+            - pip install awscli
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws configure set default.region "us-east-1"
+            - aws ecs update-service --cluster billing-service-staging --service billing-service-staging-svc --force-new-deployment --region us-east-1
+
+    main:
+      - step:
+          name: Build + Scan + Push (Production)
+          services:
+            - docker
+          caches:
+            - docker
+          script:
+            - apk add --no-cache curl
+            - pip install awscli
+            - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
+            - export TAG=${BITBUCKET_COMMIT:0:7}
+
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws configure set default.region "us-east-1"
+            - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 082178185739.dkr.ecr.us-east-1.amazonaws.com
+
+            - docker build -t $IMAGE:$TAG -t $IMAGE:latest .
+
+            - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            - docker save $IMAGE:$TAG -o billing.tar
+            - trivy image --input billing.tar --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --no-progress
+            - rm -f billing.tar
+
+            - docker push $IMAGE:$TAG
+            - docker push $IMAGE:latest
+
+      # NOTE: prod ECS cluster/service doesn't exist yet — this step will fail
+      # until billing prod Terraform is applied.
+      - step:
+          name: Deploy to Production ECS
+          trigger: manual
+          script:
+            - pip install awscli
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws configure set default.region "us-east-1"
+            - aws ecs update-service --cluster billing-service-prod --service billing-service-prod-svc --force-new-deployment --region us-east-1
