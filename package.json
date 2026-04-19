@@ -19,7 +19,8 @@
     "test:cov:files": "jest --coverage --collectCoverageFrom",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand --forceExit",
-    "migrate": "drizzle-kit migrate"
+    "migrate": "drizzle-kit migrate",
+    "migrate:prod": "node dist/migrations/migrate.js"
   },
   "dependencies": {
     "@adyen/api-library": "^30.1.0",
