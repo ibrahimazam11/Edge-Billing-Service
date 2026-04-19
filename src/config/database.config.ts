@@ -6,6 +6,7 @@ export const databaseConfig = registerAs("database", () => {
   const name = process.env.DATABASE_NAME;
   const user = process.env.DATABASE_USER;
   const password = process.env.DATABASE_PASSWORD;
+  const ssl = process.env.DATABASE_SSL === "true";
 
   if (!host) throw new Error("DATABASE_HOST is required");
   if (!name) throw new Error("DATABASE_NAME is required");
@@ -13,5 +14,5 @@ export const databaseConfig = registerAs("database", () => {
   if (!password) throw new Error("DATABASE_PASSWORD is required");
   if (isNaN(port)) throw new Error("DATABASE_PORT must be a valid number");
 
-  return { host, port, name, user, password };
+  return { host, port, name, user, password, ssl };
 });
