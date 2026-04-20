@@ -1165,6 +1165,11 @@ describe("ChargesService", () => {
   });
 
   describe("createOnboardingCharge", () => {
+    // 30 days ahead of "now" so the suite stays green regardless of when it runs.
+    const futureDate = new Date(Date.now() + 30 * 86400000)
+      .toISOString()
+      .split("T")[0];
+
     const dto = {
       customerId: "cust-uuid-1",
       amountCents: 15000,

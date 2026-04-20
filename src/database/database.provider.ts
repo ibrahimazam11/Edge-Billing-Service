@@ -16,6 +16,9 @@ export const databaseProvider: Provider = {
       database: configService.get<string>("database.name"),
       user: configService.get<string>("database.user"),
       password: configService.get<string>("database.password"),
+      ssl: configService.get<boolean>("database.ssl")
+        ? { rejectUnauthorized: false }
+        : undefined,
     });
 
     return drizzle(pool, { schema });
