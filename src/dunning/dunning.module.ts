@@ -13,7 +13,7 @@ import { DunningAttemptsRepository } from "./dunning.repository";
   imports: [
     DatabaseModule,
     DualWriteModule,
-    PaymentMethodsModule,
+    forwardRef(() => PaymentMethodsModule),
     forwardRef(() => InvoicesModule),
     forwardRef(() => ChargesModule),
     forwardRef(() => SubscriptionsModule),

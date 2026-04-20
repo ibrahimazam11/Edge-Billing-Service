@@ -11,7 +11,7 @@ import { SubscriptionsController } from "./subscriptions.controller";
 @Module({
   imports: [
     CustomersModule,
-    PaymentMethodsModule,
+    forwardRef(() => PaymentMethodsModule),
     DualWriteModule,
     forwardRef(() => InvoicesModule),
     forwardRef(() => SqsIntegrationModule),

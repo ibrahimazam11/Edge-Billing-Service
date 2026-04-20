@@ -32,6 +32,9 @@ import type {
   PayrollEmployeeLineItem,
 } from "../integration/sqs/contracts/inbound-events";
 import { CustomersService } from "../customers/customers.service";
+import { SurchargeConfigService } from "../surcharges/surcharge-config.service";
+import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
+import { PAYMENT_METHOD_TYPE_CARD } from "../common/constants/payment-method-types";
 import { calculateInvoiceDueDate } from "../common/utils/billing-date.util";
 
 export const CHARGES_SERVICE = Symbol("CHARGES_SERVICE");
@@ -66,6 +69,11 @@ export class InvoicesService {
     },
     @Optional()
     private readonly dualWriteService?: DualWriteService,
+    @Optional()
+    private readonly surchargeConfigService?: SurchargeConfigService,
+    @Optional()
+    @Inject(forwardRef(() => PaymentMethodsService))
+    private readonly paymentMethodsService?: PaymentMethodsService,
   ) {}
 
   async generateInvoicesForDueSubscriptions(
@@ -525,10 +533,24 @@ export class InvoicesService {
     creditResult: CreditApplicationResult;
   }> {
     const lineItemsData = this.calculateLineItems(subscription);
-    const totalAmountCents = lineItemsData.reduce(
+    let totalAmountCents = lineItemsData.reduce(
       (sum, item) => sum + item.amountCents * item.quantity,
       0,
     );
+
+    const surcharge = await this.calculateSurcharge(
+      subscription.customerId,
+      totalAmountCents,
+    );
+    if (surcharge) {
+      lineItemsData.push({
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+      });
+      totalAmountCents += surcharge.amountCents;
+    }
 
     const invoiceId = generateId();
     const now = new Date();
@@ -737,6 +759,24 @@ export class InvoicesService {
     const invoiceId = generateId();
     const now = new Date();
 
+    // Calculate surcharge on raw subtotal before persisting
+    const allLineItems = [...params.lineItems];
+    let adjustedTotal = params.totalAmountCents;
+
+    const surcharge = await this.calculateSurcharge(
+      params.customerId,
+      params.totalAmountCents,
+    );
+    if (surcharge) {
+      allLineItems.push({
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+      });
+      adjustedTotal += surcharge.amountCents;
+    }
+
     await this.db.transaction(async (tx) => {
       await this.invoicesRepository.create(
         {
@@ -745,7 +785,7 @@ export class InvoicesService {
           subscriptionId: params.subscriptionId,
           type: params.type,
           status: "draft",
-          totalAmountCents: params.totalAmountCents,
+          totalAmountCents: adjustedTotal,
           currency: params.currency,
           billingPeriodStart: params.billingPeriodStart,
           billingPeriodEnd: params.billingPeriodEnd,
@@ -757,8 +797,8 @@ export class InvoicesService {
         tx,
       );
 
-      if (params.lineItems.length > 0) {
-        const lineItemRows = params.lineItems.map((item) => ({
+      if (allLineItems.length > 0) {
+        const lineItemRows = allLineItems.map((item) => ({
           id: generateId(),
           invoiceId,
           type: item.type,
@@ -927,6 +967,23 @@ export class InvoicesService {
       createdAt: now,
     }));
 
+    // Calculate surcharge on the employee subtotal
+    let adjustedTotal = totalAmountCents;
+    const surcharge = await this.calculateSurcharge(customerId, totalAmountCents);
+    if (surcharge) {
+      newLineItems.push({
+        id: generateId(),
+        invoiceId: openInvoice.id,
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+        breakdown: null as any,
+        createdAt: now,
+      });
+      adjustedTotal += surcharge.amountCents;
+    }
+
     await this.db.transaction(async (tx) => {
       await this.invoicesRepository.deleteLineItemsByInvoiceId(
         openInvoice.id,
@@ -937,7 +994,7 @@ export class InvoicesService {
 
       await this.invoicesRepository.update(
         openInvoice.id,
-        { totalAmountCents, updatedAt: now },
+        { totalAmountCents: adjustedTotal, updatedAt: now },
         tx,
       );
     });
@@ -947,7 +1004,8 @@ export class InvoicesService {
       invoiceId: openInvoice.id,
       customerId,
       employeeCount: employees.length,
-      totalAmountCents,
+      totalAmountCents: adjustedTotal,
+      surchargeAmountCents: surcharge?.amountCents ?? 0,
       correlationId,
     });
   }
@@ -1009,5 +1067,93 @@ export class InvoicesService {
       breakdown: item.breakdown as Record<string, number> | null,
       createdAt: item.createdAt.toISOString(),
     };
+  }
+
+  private async calculateSurcharge(
+    customerId: string,
+    subtotalCents: number,
+  ): Promise<{ amountCents: number; description: string } | null> {
+    if (!this.paymentMethodsService || !this.surchargeConfigService) return null;
+
+    const defaultPm =
+      await this.paymentMethodsService.getDefaultPaymentMethod(customerId);
+    if (!defaultPm || defaultPm.type !== PAYMENT_METHOD_TYPE_CARD) return null;
+
+    const config = await this.surchargeConfigService.getConfig(customerId);
+    if (!config || !config.surchargeType || !config.surchargeValue) return null;
+
+    let amountCents: number;
+    if (config.surchargeType === "percentage") {
+      amountCents = Math.round(
+        (subtotalCents * config.surchargeValue) / 100,
+      );
+    } else {
+      // flat_fee: surchargeValue is in dollars, convert to cents
+      amountCents = config.surchargeValue * 100;
+    }
+
+    if (amountCents <= 0) return null;
+
+    return { amountCents, description: "Credit card surcharge" };
+  }
+
+  async recalculateSurchargeOnOpenInvoice(
+    customerId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const openInvoice =
+      await this.invoicesRepository.findOpenByCustomerId(customerId);
+    if (!openInvoice) return;
+
+    const items = await this.invoicesRepository.getLineItemsByInvoiceId(
+      openInvoice.id,
+    );
+    const nonSurchargeItems = items.filter((i) => i.type !== "surcharge");
+    const subtotalCents = nonSurchargeItems.reduce(
+      (sum, i) => sum + i.amountCents * i.quantity,
+      0,
+    );
+
+    const surcharge = await this.calculateSurcharge(customerId, subtotalCents);
+    const newTotal = subtotalCents + (surcharge?.amountCents ?? 0);
+
+    await this.db.transaction(async (tx) => {
+      await this.invoicesRepository.deleteLineItemsByInvoiceIdAndType(
+        openInvoice.id,
+        "surcharge",
+        tx,
+      );
+
+      if (surcharge) {
+        await this.invoicesRepository.createLineItem(
+          {
+            id: generateId(),
+            invoiceId: openInvoice.id,
+            type: "surcharge",
+            description: surcharge.description,
+            amountCents: surcharge.amountCents,
+            quantity: 1,
+            createdAt: new Date(),
+          },
+          tx,
+        );
+      }
+
+      await this.invoicesRepository.update(
+        openInvoice.id,
+        { totalAmountCents: newTotal, updatedAt: new Date() },
+        tx,
+      );
+    });
+
+    this.logger.log({
+      message: "Surcharge recalculated on open invoice",
+      invoiceId: openInvoice.id,
+      customerId,
+      subtotalCents,
+      surchargeAmountCents: surcharge?.amountCents ?? 0,
+      newTotal,
+      correlationId,
+    });
   }
 }

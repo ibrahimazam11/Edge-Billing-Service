@@ -161,6 +161,21 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       .where(eq(invoiceLineItems.invoiceId, invoiceId));
   }
 
+  async deleteLineItemsByInvoiceIdAndType(
+    invoiceId: string,
+    type: string,
+    tx?: TransactionClient,
+  ): Promise<void> {
+    await this.conn(tx)
+      .delete(invoiceLineItems)
+      .where(
+        and(
+          eq(invoiceLineItems.invoiceId, invoiceId),
+          eq(invoiceLineItems.type, type),
+        ),
+      );
+  }
+
   async findOpenByCustomerId(
     customerId: string,
   ): Promise<Invoice | null> {

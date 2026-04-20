@@ -367,6 +367,12 @@ export class MonolithEventsConsumer {
       surchargeValue: payload.surchargeValue,
     });
 
+    // Recalculate surcharge on open invoice after config change
+    await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
+      customer.id,
+      correlationId,
+    );
+
     this.logger.log({
       message: "Surcharge config updated",
       customerId: customer.id,

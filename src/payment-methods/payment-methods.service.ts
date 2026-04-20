@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional, forwardRef } from "@nestjs/common";
 import { GatewayRegistry } from "../gateway/gateway.registry";
 import { GatewayProvider } from "../common/enums/gateway-provider.enum";
 import { CustomersService } from "../customers/customers.service";
@@ -19,6 +19,15 @@ import {
 import { PaymentMethodsRepository } from "./payment-methods.repository";
 import { GatewayAssignmentsRepository } from "./gateway-assignments.repository";
 import type { SetupIntentGateway } from "../gateway/gateway.interface";
+// Use a token to avoid circular import — InvoicesModule provides InvoicesService
+export const INVOICES_SERVICE = Symbol("INVOICES_SERVICE");
+
+export interface ISurchargeRecalculator {
+  recalculateSurchargeOnOpenInvoice(
+    customerId: string,
+    correlationId: string,
+  ): Promise<void>;
+}
 
 @Injectable()
 export class PaymentMethodsService {
@@ -29,6 +38,9 @@ export class PaymentMethodsService {
     private readonly gatewayAssignmentsRepository: GatewayAssignmentsRepository,
     private readonly gatewayRegistry: GatewayRegistry,
     private readonly customersService: CustomersService,
+    @Optional()
+    @Inject(INVOICES_SERVICE)
+    private readonly invoicesService?: ISurchargeRecalculator,
   ) {}
 
   async attach(
@@ -149,6 +161,12 @@ export class PaymentMethodsService {
       customerId,
       correlationId,
     });
+
+    // Recalculate surcharge — PM type may have changed (or no PM left)
+    await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
+      customerId,
+      correlationId ?? "pm-detach",
+    );
   }
 
   async setDefault(
@@ -187,6 +205,12 @@ export class PaymentMethodsService {
       customerId,
       correlationId,
     });
+
+    // Recalculate surcharge on open invoice after PM change
+    await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
+      customerId,
+      correlationId ?? "pm-default-change",
+    );
 
     return this.toResponseDto(updated);
   }
@@ -420,6 +444,12 @@ export class PaymentMethodsService {
       customerId,
       correlationId,
     });
+
+    // Recalculate surcharge — new default PM may be a different type
+    await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
+      customerId,
+      correlationId ?? "pm-setup-confirm",
+    );
 
     return this.toResponseDto(created);
   }
