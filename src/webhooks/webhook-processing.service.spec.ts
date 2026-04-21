@@ -107,7 +107,9 @@ describe("WebhookProcessingService", () => {
     };
 
     const mockCustomersRepo = {
-      findById: jest.fn().mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
+      findById: jest
+        .fn()
+        .mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
     };
 
     service = new WebhookProcessingService(
@@ -768,7 +770,9 @@ describe("WebhookProcessingService", () => {
   describe("service without SubscriptionsService", () => {
     it("should skip billing period advance when SubscriptionsService not injected", async () => {
       const mockCustomersRepoNoSubs = {
-        findById: jest.fn().mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
+        findById: jest
+          .fn()
+          .mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
       };
       const serviceNoSubs = new WebhookProcessingService(
         mockDb as unknown as DrizzleDatabase,

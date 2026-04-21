@@ -475,7 +475,9 @@ export class DunningService {
       const dualWriteMetadata =
         await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);
 
-      const dunningCustomer = await this.customersRepository?.findById(invoice.customerId);
+      const dunningCustomer = await this.customersRepository?.findById(
+        invoice.customerId,
+      );
       const dunningMonolithId = dunningCustomer?.monolithCustomerId ?? "";
 
       try {

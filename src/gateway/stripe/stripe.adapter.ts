@@ -263,7 +263,10 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
           },
         },
         payment_method_options: {
-          us_bank_account: { verification_method: "skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod },
+          us_bank_account: {
+            verification_method:
+              "skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod,
+          },
         },
         mandate_data: {
           customer_acceptance: {
@@ -289,7 +292,8 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
           payment_method_options: {
             us_bank_account: {
               financial_connections: { permissions: ["payment_method"] },
-              verification_method: "instant_or_skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod,
+              verification_method:
+                "instant_or_skip" as Stripe.SetupIntentCreateParams.PaymentMethodOptions.UsBankAccount.VerificationMethod,
             },
           },
         });
@@ -298,7 +302,9 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
     );
   }
 
-  async createCardSetup(input: CreateCardSetupInput): Promise<SetupIntentResult> {
+  async createCardSetup(
+    input: CreateCardSetupInput,
+  ): Promise<SetupIntentResult> {
     return this.executeWithResilience("createCardSetup", async () => {
       const si = await this.stripe.setupIntents.create({
         customer: input.customerId,
@@ -309,7 +315,9 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
     });
   }
 
-  async retrieveSetupIntent(input: ConfirmSetupInput): Promise<SetupIntentResult> {
+  async retrieveSetupIntent(
+    input: ConfirmSetupInput,
+  ): Promise<SetupIntentResult> {
     return this.executeWithResilience("retrieveSetupIntent", async () => {
       const si = await this.stripe.setupIntents.retrieve(input.setupIntentId);
       return this.mapSetupIntent(si);
@@ -345,11 +353,9 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
       paymentMethodId:
         typeof si.payment_method === "string"
           ? si.payment_method
-          : si.payment_method?.id ?? null,
+          : (si.payment_method?.id ?? null),
       mandateId:
-        typeof si.mandate === "string"
-          ? si.mandate
-          : si.mandate?.id ?? null,
+        typeof si.mandate === "string" ? si.mandate : (si.mandate?.id ?? null),
     };
   }
 

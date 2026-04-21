@@ -28,7 +28,9 @@ export class CustomersRepository extends BaseRepository<typeof customers> {
     return row ?? null;
   }
 
-  async findByStripeCustomerId(stripeCustomerId: string): Promise<Customer | null> {
+  async findByStripeCustomerId(
+    stripeCustomerId: string,
+  ): Promise<Customer | null> {
     const [row] = await this.db
       .select()
       .from(customers)

@@ -49,7 +49,9 @@ import { SurchargeConfigService } from "../../surcharges/surcharge-config.servic
       inject: [ConfigService],
       useFactory: (configService: ConfigService): SqsOptions => {
         const accessKeyId = configService.get<string>("aws.accessKeyId");
-        const secretAccessKey = configService.get<string>("aws.secretAccessKey");
+        const secretAccessKey = configService.get<string>(
+          "aws.secretAccessKey",
+        );
 
         const sqsClient = new SQSClient({
           region: configService.get<string>("aws.region"),

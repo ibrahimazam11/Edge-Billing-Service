@@ -32,7 +32,9 @@ export class SetupIntentsController {
   @Post("financial-connections")
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Create Financial Connections setup intent" })
-  @ApiCreatedResponse({ description: "SetupIntent created with client_secret for frontend" })
+  @ApiCreatedResponse({
+    description: "SetupIntent created with client_secret for frontend",
+  })
   @ApiHeader({ name: "x-correlation-id", required: false })
   async createFinancialConnections(
     @Param("customerId") customerId: string,
@@ -47,7 +49,9 @@ export class SetupIntentsController {
   @Post("manual-ach")
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Create Manual ACH setup intent with bank details" })
-  @ApiCreatedResponse({ description: "SetupIntent created and confirmed with bank details" })
+  @ApiCreatedResponse({
+    description: "SetupIntent created and confirmed with bank details",
+  })
   @ApiHeader({ name: "x-correlation-id", required: false })
   async createManualAch(
     @Param("customerId") customerId: string,
@@ -64,13 +68,18 @@ export class SetupIntentsController {
   @Post("credit-card")
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Create credit card setup intent" })
-  @ApiCreatedResponse({ description: "SetupIntent created with client_secret for Stripe.js" })
+  @ApiCreatedResponse({
+    description: "SetupIntent created with client_secret for Stripe.js",
+  })
   @ApiHeader({ name: "x-correlation-id", required: false })
   async createCreditCard(
     @Param("customerId") customerId: string,
     @Headers("x-correlation-id") correlationId?: string,
   ): Promise<SetupIntentResponseDto> {
-    return this.paymentMethodsService.createCardSetup(customerId, correlationId);
+    return this.paymentMethodsService.createCardSetup(
+      customerId,
+      correlationId,
+    );
   }
 
   @Post(":setupIntentId/confirm")

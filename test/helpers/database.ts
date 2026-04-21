@@ -40,8 +40,8 @@ export async function setupTestDatabase(): Promise<void> {
   if (!dbName.endsWith("_test")) {
     throw new Error(
       `setupTestDatabase() refused: database "${dbName}" does not end with "_test". ` +
-      `This safeguard prevents accidental schema drops on non-test databases. ` +
-      `Check .env.test is present and DATABASE_NAME ends with "_test".`,
+        `This safeguard prevents accidental schema drops on non-test databases. ` +
+        `Check .env.test is present and DATABASE_NAME ends with "_test".`,
     );
   }
 
@@ -105,8 +105,8 @@ export async function cleanDatabase(): Promise<void> {
   if (!dbName.endsWith("_test")) {
     throw new Error(
       `cleanDatabase() refused: database "${dbName}" does not end with "_test". ` +
-      `This safeguard prevents accidental TRUNCATE on non-test databases. ` +
-      `Check .env.test is present and DATABASE_NAME ends with "_test".`,
+        `This safeguard prevents accidental TRUNCATE on non-test databases. ` +
+        `Check .env.test is present and DATABASE_NAME ends with "_test".`,
     );
   }
   const testDb = getTestDatabase();

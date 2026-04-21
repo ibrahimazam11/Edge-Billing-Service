@@ -368,7 +368,7 @@ describe("MonolithEventsConsumer", () => {
         monolithCustomerId: "mono-cust-1",
         totalAmountCents: 75000,
         currency: "usd",
-  
+
         employees: [],
       });
       const message = createSqsMessage(envelope);

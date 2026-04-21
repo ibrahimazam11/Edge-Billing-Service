@@ -162,7 +162,7 @@ export class ChargesService {
         metadata: {
           billingCustomerId: invoice.customerId,
           billingInvoiceId: invoiceId,
-          monolithCustomerId: customer.monolithCustomerId ?? '',
+          monolithCustomerId: customer.monolithCustomerId ?? "",
         },
       });
 
@@ -236,9 +236,7 @@ export class ChargesService {
 
         // Publish events (outside transaction)
         const dualWriteMetadata =
-          await this.dualWriteService?.getDualWriteMetadata(
-            invoice.customerId,
-          );
+          await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);
 
         try {
           await this.sqsProducerService.publish(
@@ -873,7 +871,8 @@ export class ChargesService {
         });
 
         this.logger.log({
-          message: "One-time charge payment pending (async) — waiting for webhook",
+          message:
+            "One-time charge payment pending (async) — waiting for webhook",
           chargeId,
           invoiceId,
           stripePaymentIntentId: gatewayResult.id,

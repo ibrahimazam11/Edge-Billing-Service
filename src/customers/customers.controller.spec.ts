@@ -138,12 +138,16 @@ describe("CustomersController", () => {
 
   describe("GET /v1/customers/by-stripe-id/:stripeCustomerId", () => {
     it("should return customer when found by Stripe customer ID", async () => {
-      service.findByStripeCustomerId.mockResolvedValueOnce(mockCustomerResponse);
+      service.findByStripeCustomerId.mockResolvedValueOnce(
+        mockCustomerResponse,
+      );
 
       const result = await controller.findByStripeCustomerId("cus_stripe_123");
 
       expect(result).toEqual(mockCustomerResponse);
-      expect(service.findByStripeCustomerId).toHaveBeenCalledWith("cus_stripe_123");
+      expect(service.findByStripeCustomerId).toHaveBeenCalledWith(
+        "cus_stripe_123",
+      );
     });
 
     it("should throw CustomerNotFoundException when not found by Stripe customer ID", async () => {

@@ -110,9 +110,11 @@ export class WebhookProcessingService {
         correlationId,
       });
       if (webhookEventId) {
-        await this.webhookEventsRepository.updateStatus(webhookEventId, "ignored", {
-          errorMessage: "Duplicate event — already processed",
-        }).catch(() => {});
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "ignored", {
+            errorMessage: "Duplicate event — already processed",
+          })
+          .catch(() => {});
       }
       return;
     }
@@ -150,9 +152,11 @@ export class WebhookProcessingService {
       });
 
       if (webhookEventId) {
-        await this.webhookEventsRepository.updateStatus(webhookEventId, "ignored", {
-          errorMessage: `Unsupported event type: ${payload.type}`,
-        }).catch(() => {});
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "ignored", {
+            errorMessage: `Unsupported event type: ${payload.type}`,
+          })
+          .catch(() => {});
       }
 
       // Still mark as processed to avoid re-processing
@@ -187,20 +191,24 @@ export class WebhookProcessingService {
         const charge = await this.chargesRepository.findByStripePaymentIntentId(
           normalizedEvent.gatewayChargeId,
         );
-        await this.webhookEventsRepository.updateStatus(webhookEventId, "succeeded", {
-          customerId: charge?.customerId,
-          chargeId: charge?.id,
-          invoiceId: charge?.invoiceId,
-        }).catch(() => {});
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "succeeded", {
+            customerId: charge?.customerId,
+            chargeId: charge?.id,
+            invoiceId: charge?.invoiceId,
+          })
+          .catch(() => {});
       }
     } catch (routingError) {
       if (webhookEventId) {
-        await this.webhookEventsRepository.updateStatus(webhookEventId, "failed", {
-          errorMessage:
-            routingError instanceof Error
-              ? routingError.message
-              : String(routingError),
-        }).catch(() => {});
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "failed", {
+            errorMessage:
+              routingError instanceof Error
+                ? routingError.message
+                : String(routingError),
+          })
+          .catch(() => {});
       }
       throw routingError;
     }
@@ -338,7 +346,9 @@ export class WebhookProcessingService {
       }
 
       // Resolve monolithCustomerId for outbound events
-      const customerRecord = await this.customersRepository.findById(invoice.customerId);
+      const customerRecord = await this.customersRepository.findById(
+        invoice.customerId,
+      );
       const monolithCustomerId = customerRecord?.monolithCustomerId ?? "";
 
       // Publish events (outside transaction)
@@ -437,7 +447,9 @@ export class WebhookProcessingService {
     });
 
     // Resolve monolithCustomerId for outbound event
-    const failedCustomer = await this.customersRepository.findById(charge.customerId);
+    const failedCustomer = await this.customersRepository.findById(
+      charge.customerId,
+    );
     const failedMonolithCustomerId = failedCustomer?.monolithCustomerId ?? "";
 
     // Publish payment.failed event

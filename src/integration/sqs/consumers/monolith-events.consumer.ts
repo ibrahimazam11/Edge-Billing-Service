@@ -225,7 +225,11 @@ export class MonolithEventsConsumer {
       return;
     }
 
-    await this.invoicesService.createFromEvent(payload, customer.id, correlationId);
+    await this.invoicesService.createFromEvent(
+      payload,
+      customer.id,
+      correlationId,
+    );
 
     this.logger.log({
       message: "Invoice created from monolith event",

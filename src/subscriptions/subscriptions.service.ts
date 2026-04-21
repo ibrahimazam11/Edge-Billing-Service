@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, Optional, forwardRef } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  forwardRef,
+} from "@nestjs/common";
 import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
@@ -7,7 +13,10 @@ import { InvoicesService } from "../invoices/invoices.service";
 import { SubscriptionsRepository } from "./subscriptions.repository";
 import { subscriptions } from "../database/schema/subscriptions";
 import { generateId } from "../common/utils/uuid.util";
-import { calculateInvoiceDueDate, getBillingCycleDay } from "../common/utils/billing-date.util";
+import {
+  calculateInvoiceDueDate,
+  getBillingCycleDay,
+} from "../common/utils/billing-date.util";
 import { validateTransition } from "../common/utils/state-machine.util";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
@@ -115,10 +124,11 @@ export class SubscriptionsService {
     const isPrepaid = customer?.isPrepaid ?? true;
 
     // Check if paused subscription exists — resume instead of creating new
-    const existingSubs = await this.subscriptionsRepository.findByCustomerAndStatuses(
-      billingCustomerId,
-      ["paused"],
-    );
+    const existingSubs =
+      await this.subscriptionsRepository.findByCustomerAndStatuses(
+        billingCustomerId,
+        ["paused"],
+      );
 
     let subscriptionId: string;
 
@@ -129,7 +139,11 @@ export class SubscriptionsService {
 
       const newStart = new Date(payload.billingStartDate);
       const newEnd = this.calculateBillingPeriodEnd(newStart);
-      const nextBillingDate = calculateInvoiceDueDate(newStart, chargeDay, isPrepaid);
+      const nextBillingDate = calculateInvoiceDueDate(
+        newStart,
+        chargeDay,
+        isPrepaid,
+      );
 
       await this.subscriptionsRepository.updateStateWithConcurrencyCheck(
         pausedSub.id,
@@ -152,12 +166,17 @@ export class SubscriptionsService {
       });
     } else {
       // Step 1: Create new subscription
-      const firstBillingPeriodStart =
-        this.calculateFirstBillingPeriodStart(onboardingDate, chargeDay);
-      const billingPeriodEnd =
-        this.calculateBillingPeriodEnd(firstBillingPeriodStart);
+      const firstBillingPeriodStart = this.calculateFirstBillingPeriodStart(
+        onboardingDate,
+        chargeDay,
+      );
+      const billingPeriodEnd = this.calculateBillingPeriodEnd(
+        firstBillingPeriodStart,
+      );
       const nextBillingDate = calculateInvoiceDueDate(
-        firstBillingPeriodStart, chargeDay, isPrepaid,
+        firstBillingPeriodStart,
+        chargeDay,
+        isPrepaid,
       );
 
       subscriptionId = generateId();
@@ -193,7 +212,11 @@ export class SubscriptionsService {
     const sub = await this.subscriptionsRepository.findById(subscriptionId);
     const invoiceBillingStart = sub!.billingPeriodStart;
     const invoiceBillingEnd = sub!.billingPeriodEnd;
-    const invoiceDueDate = calculateInvoiceDueDate(invoiceBillingStart, chargeDay, isPrepaid);
+    const invoiceDueDate = calculateInvoiceDueDate(
+      invoiceBillingStart,
+      chargeDay,
+      isPrepaid,
+    );
 
     const employees = payload.employees;
     const monthlyLineItems = employees?.length
@@ -212,8 +235,12 @@ export class SubscriptionsService {
 
     // For resumed subscriptions, update existing open invoice instead of creating duplicate
     // If open invoice belongs to a different (e.g., canceled) subscription, void it and create fresh
-    const existingOpenInvoice = await this.invoicesService.findOpenByCustomerId(billingCustomerId);
-    if (existingOpenInvoice && existingOpenInvoice.subscriptionId === subscriptionId) {
+    const existingOpenInvoice =
+      await this.invoicesService.findOpenByCustomerId(billingCustomerId);
+    if (
+      existingOpenInvoice &&
+      existingOpenInvoice.subscriptionId === subscriptionId
+    ) {
       await this.invoicesService.updateOpenInvoiceLineItems(
         billingCustomerId,
         employees || [],
@@ -222,7 +249,10 @@ export class SubscriptionsService {
       );
     } else {
       if (existingOpenInvoice) {
-        await this.invoicesService.voidDraftInvoicesForCustomer(billingCustomerId, correlationId);
+        await this.invoicesService.voidDraftInvoicesForCustomer(
+          billingCustomerId,
+          correlationId,
+        );
       }
       await this.invoicesService.createDraftInvoice(
         {
@@ -288,7 +318,10 @@ export class SubscriptionsService {
    * - If onboardingDate is in a future month → cycleDay of (that month + 1)
    * - If onboardingDate is in current or past month → cycleDay of (next month from today)
    */
-  private calculateFirstBillingPeriodStart(onboardingDate: Date, chargeDay: number): Date {
+  private calculateFirstBillingPeriodStart(
+    onboardingDate: Date,
+    chargeDay: number,
+  ): Date {
     const cycleDay = getBillingCycleDay(chargeDay);
     const now = new Date();
     const nowYear = now.getFullYear();
@@ -316,7 +349,9 @@ export class SubscriptionsService {
     }
 
     // Clamp cycle day for short months (e.g., Feb)
-    const maxDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+    const maxDay = new Date(
+      Date.UTC(targetYear, targetMonth + 1, 0),
+    ).getUTCDate();
     const day = Math.min(cycleDay, maxDay);
 
     return new Date(Date.UTC(targetYear, targetMonth, day));
@@ -376,7 +411,10 @@ export class SubscriptionsService {
     if (targetState === "paused" || targetState === "canceled") {
       // Void unfinalized drafts; finalized invoices represent real debt and stay
       // in their lifecycle (ACH settles via webhook, dunning retries failed charges).
-      await this.invoicesService.voidDraftInvoicesForCustomer(existing.customerId, correlationId);
+      await this.invoicesService.voidDraftInvoicesForCustomer(
+        existing.customerId,
+        correlationId,
+      );
 
       updateData = {
         status: targetState,
@@ -477,7 +515,11 @@ export class SubscriptionsService {
     const customer = await this.customersService.findById(existing.customerId);
     const chargeDay = customer?.chargeDay ?? 15;
     const isPrepaid = customer?.isPrepaid ?? true;
-    const nextBillingDate = calculateInvoiceDueDate(newStart, chargeDay, isPrepaid);
+    const nextBillingDate = calculateInvoiceDueDate(
+      newStart,
+      chargeDay,
+      isPrepaid,
+    );
 
     const updated = await this.subscriptionsRepository.update(subscriptionId, {
       billingPeriodStart: newStart,
