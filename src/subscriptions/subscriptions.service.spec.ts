@@ -6,7 +6,6 @@ import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { InvoicesService } from "../invoices/invoices.service";
-import { DualWriteService } from "../migration/dual-write.service";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
 import { NoPaymentMethodException } from "../common/exceptions/no-payment-method.exception";
@@ -45,10 +44,6 @@ const mockInvoicesService = {
   createDraftInvoice: jest.fn().mockResolvedValue(undefined),
   updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
   voidDraftInvoicesForCustomer: jest.fn().mockResolvedValue(0),
-};
-
-const mockDualWriteService = {
-  getDualWriteMetadata: jest.fn().mockResolvedValue(null),
 };
 
 const mockCustomer = {
@@ -251,7 +246,9 @@ describe("SubscriptionsService", () => {
       const createCall = mockSubscriptionsRepo.create.mock
         .calls[0][0] as Record<string, unknown>;
       // chargeDay=15, prepaid, billingStart=March 1 → dueDate = March 15
-      expect(createCall.nextBillingDate).toEqual(new Date("2026-03-15T00:00:00.000Z"));
+      expect(createCall.nextBillingDate).toEqual(
+        new Date("2026-03-15T00:00:00.000Z"),
+      );
     });
   });
 
@@ -914,7 +911,9 @@ describe("SubscriptionsService", () => {
   });
 
   describe("buildEmployeeLineItems (via createFromEvent)", () => {
-    const makeSubscriptionPayload = (employees: Array<Record<string, unknown>>) => ({
+    const makeSubscriptionPayload = (
+      employees: Array<Record<string, unknown>>,
+    ) => ({
       monolithCustomerId: "mono-123",
       planName: "standard-monthly",
       amountCents: 10000,

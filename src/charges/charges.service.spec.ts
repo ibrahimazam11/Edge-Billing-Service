@@ -1165,11 +1165,6 @@ describe("ChargesService", () => {
   });
 
   describe("createOnboardingCharge", () => {
-    // 30 days ahead of "now" so the suite stays green regardless of when it runs.
-    const futureDate = new Date(Date.now() + 30 * 86400000)
-      .toISOString()
-      .split("T")[0];
-
     const dto = {
       customerId: "cust-uuid-1",
       amountCents: 15000,
@@ -1313,9 +1308,7 @@ describe("ChargesService", () => {
         mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
           makePaymentMethodResponse(),
         );
-        mockCustomersService.findById.mockResolvedValue(
-          makeCustomerResponse(),
-        );
+        mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
         mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
           "cus_stripe_1",
         );
@@ -1363,9 +1356,7 @@ describe("ChargesService", () => {
       const correlationId = "corr-meta-ot";
 
       beforeEach(() => {
-        mockCustomersService.findById.mockResolvedValue(
-          makeCustomerResponse(),
-        );
+        mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
         mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
           makePaymentMethodResponse(),
         );

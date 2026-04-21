@@ -5,7 +5,6 @@ import {
   eq,
   gte,
   inArray,
-  isNull,
   lt,
   lte,
   sql,
@@ -176,9 +175,7 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       );
   }
 
-  async findOpenByCustomerId(
-    customerId: string,
-  ): Promise<Invoice | null> {
+  async findOpenByCustomerId(customerId: string): Promise<Invoice | null> {
     const [row] = await this.db
       .select()
       .from(invoices)
@@ -193,17 +190,12 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     return row ?? null;
   }
 
-  async findDraftByCustomerId(
-    customerId: string,
-  ): Promise<Invoice | null> {
+  async findDraftByCustomerId(customerId: string): Promise<Invoice | null> {
     const [row] = await this.db
       .select()
       .from(invoices)
       .where(
-        and(
-          eq(invoices.customerId, customerId),
-          eq(invoices.status, "draft"),
-        ),
+        and(eq(invoices.customerId, customerId), eq(invoices.status, "draft")),
       )
       .orderBy(invoices.createdAt)
       .limit(1);

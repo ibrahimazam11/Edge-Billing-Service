@@ -19,11 +19,16 @@ function loadPayrollAdvanceDays(): readonly number[] {
   const envVal = process.env.PAYROLL_ADVANCE_DAYS;
   if (envVal) {
     try {
-      const parsed = JSON.parse(envVal);
-      if (Array.isArray(parsed) && parsed.every((n: unknown) => typeof n === "number")) {
+      const parsed: unknown = JSON.parse(envVal);
+      if (
+        Array.isArray(parsed) &&
+        parsed.every((n: unknown) => typeof n === "number")
+      ) {
         return Object.freeze(parsed);
       }
-    } catch { /* fall through to default */ }
+    } catch {
+      /* fall through to default */
+    }
   }
   return Object.freeze(DEFAULT_PAYROLL_ADVANCE_DAYS);
 }
@@ -36,9 +41,7 @@ export const PAYROLL_ADVANCE_DAYS: readonly number[] = loadPayrollAdvanceDays();
  * Everyone else cycles on their chargeDay (e.g., 10th→10th).
  */
 export function getBillingCycleDay(chargeDay: number): number {
-  return PAYROLL_ADVANCE_DAYS.includes(chargeDay)
-    ? 1
-    : chargeDay;
+  return PAYROLL_ADVANCE_DAYS.includes(chargeDay) ? 1 : chargeDay;
 }
 
 /** Return the last day of a given month (handles Feb, leap years, 30/31-day months). */
@@ -138,7 +141,9 @@ export function calculateNextBillingPeriod(
   }
 
   const paymentDay = clampDay(chargeDay, paymentYear, paymentMonth);
-  const nextPaymentDate = new Date(Date.UTC(paymentYear, paymentMonth, paymentDay));
+  const nextPaymentDate = new Date(
+    Date.UTC(paymentYear, paymentMonth, paymentDay),
+  );
 
   // Step 2: Derive billing period start from payment date
   //   (inverse of monolith generatePayrollMonth)
@@ -158,7 +163,9 @@ export function calculateNextBillingPeriod(
   }
 
   const bpStartDay = clampDay(cycleDay, bpStartYear, bpStartMonth);
-  let billingPeriodStart = new Date(Date.UTC(bpStartYear, bpStartMonth, bpStartDay));
+  let billingPeriodStart = new Date(
+    Date.UTC(bpStartYear, bpStartMonth, bpStartDay),
+  );
 
   // Step 3: Postpaid adjustment — billing period start shifts +1 month
   if (!isPrepaid) {

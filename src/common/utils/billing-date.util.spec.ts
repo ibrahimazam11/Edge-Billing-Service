@@ -2,7 +2,6 @@ import {
   getBillingCycleDay,
   calculateInvoiceDueDate,
   calculateNextBillingPeriod,
-  PAYROLL_ADVANCE_DAYS,
 } from "./billing-date.util";
 
 function utc(y: number, m: number, d: number): Date {

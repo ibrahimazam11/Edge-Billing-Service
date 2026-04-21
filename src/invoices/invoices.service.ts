@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, Optional, forwardRef } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  forwardRef,
+} from "@nestjs/common";
 import { DRIZZLE_PROVIDER } from "../database/database.provider";
 import type { DrizzleDatabase } from "../database/types";
 import { LedgerService } from "../ledger/ledger.service";
@@ -119,7 +125,9 @@ export class InvoicesService {
         const { invoice, creditResult } =
           await this.createInvoiceForSubscription(subscription, correlationId);
 
-        const invCustomer = await this.customersService.findById(invoice.customerId);
+        const invCustomer = await this.customersService.findById(
+          invoice.customerId,
+        );
         const invMonolithCustomerId = invCustomer?.monolithCustomerId ?? "";
 
         const invDualWriteMetadata =
@@ -294,7 +302,9 @@ export class InvoicesService {
           correlationId,
         });
 
-        const obCustomer = await this.customersService.findById(onboardingInvoice.customerId);
+        const obCustomer = await this.customersService.findById(
+          onboardingInvoice.customerId,
+        );
         const obMonolithCustomerId = obCustomer?.monolithCustomerId ?? "";
 
         const obDualWriteMetadata =
@@ -437,7 +447,8 @@ export class InvoicesService {
     customerId: string,
     correlationId?: string,
   ): Promise<number> {
-    const draftInvoice = await this.invoicesRepository.findDraftByCustomerId(customerId);
+    const draftInvoice =
+      await this.invoicesRepository.findDraftByCustomerId(customerId);
     if (!draftInvoice) return 0;
 
     const now = new Date();
@@ -556,10 +567,16 @@ export class InvoicesService {
     const now = new Date();
 
     // Compute due date from customer's chargeDay / isPrepaid
-    const customer = await this.customersService.findById(subscription.customerId);
+    const customer = await this.customersService.findById(
+      subscription.customerId,
+    );
     const chargeDay = customer?.chargeDay ?? 15;
     const isPrepaid = customer?.isPrepaid ?? true;
-    const dueDate = calculateInvoiceDueDate(subscription.billingPeriodStart, chargeDay, isPrepaid);
+    const dueDate = calculateInvoiceDueDate(
+      subscription.billingPeriodStart,
+      chargeDay,
+      isPrepaid,
+    );
 
     let creditResult: CreditApplicationResult = {
       creditApplied: 0,
@@ -688,14 +705,20 @@ export class InvoicesService {
     const dueDate = new Date(payload.dueDate);
 
     // Extract per-item breakdowns from metadata (one-time charges send full item data)
-    const itemBreakdowns = (payload.metadata as any)?.items as any[] | undefined;
+    const metadata = payload.metadata as Record<string, unknown> | null;
+    const itemBreakdowns = metadata?.items as
+      | Record<string, unknown>[]
+      | undefined;
 
     const lineItems = payload.lineItems.map((item, index) => ({
       type: payload.type,
       description: item.description,
       amountCents: item.amountCents,
       quantity: 1,
-      breakdown: itemBreakdowns?.[index] ?? null,
+      breakdown:
+        (itemBreakdowns?.[index] as
+          | Record<string, number | string>
+          | undefined) ?? null,
     }));
 
     const invoiceId = await this.createDraftInvoice(
@@ -834,7 +857,8 @@ export class InvoicesService {
     invoiceId: string,
     correlationId: string,
   ): Promise<void> {
-    const result = await this.invoicesRepository.findByIdWithLineItems(invoiceId);
+    const result =
+      await this.invoicesRepository.findByIdWithLineItems(invoiceId);
     if (!result) {
       throw new InvoiceNotFoundException(invoiceId);
     }
@@ -933,9 +957,8 @@ export class InvoicesService {
     correlationId: string,
   ): Promise<void> {
     // Find the open (draft or finalized) invoice for this customer
-    const openInvoice = await this.invoicesRepository.findOpenByCustomerId(
-      customerId,
-    );
+    const openInvoice =
+      await this.invoicesRepository.findOpenByCustomerId(customerId);
 
     if (!openInvoice) {
       this.logger.warn({
@@ -969,7 +992,10 @@ export class InvoicesService {
 
     // Calculate surcharge on the employee subtotal
     let adjustedTotal = totalAmountCents;
-    const surcharge = await this.calculateSurcharge(customerId, totalAmountCents);
+    const surcharge = await this.calculateSurcharge(
+      customerId,
+      totalAmountCents,
+    );
     if (surcharge) {
       newLineItems.push({
         id: generateId(),
@@ -978,7 +1004,7 @@ export class InvoicesService {
         description: surcharge.description,
         amountCents: surcharge.amountCents,
         quantity: 1,
-        breakdown: null as any,
+        breakdown: null,
         createdAt: now,
       });
       adjustedTotal += surcharge.amountCents;
@@ -1073,7 +1099,8 @@ export class InvoicesService {
     customerId: string,
     subtotalCents: number,
   ): Promise<{ amountCents: number; description: string } | null> {
-    if (!this.paymentMethodsService || !this.surchargeConfigService) return null;
+    if (!this.paymentMethodsService || !this.surchargeConfigService)
+      return null;
 
     const defaultPm =
       await this.paymentMethodsService.getDefaultPaymentMethod(customerId);
@@ -1084,9 +1111,7 @@ export class InvoicesService {
 
     let amountCents: number;
     if (config.surchargeType === "percentage") {
-      amountCents = Math.round(
-        (subtotalCents * config.surchargeValue) / 100,
-      );
+      amountCents = Math.round((subtotalCents * config.surchargeValue) / 100);
     } else {
       // flat_fee: surchargeValue is in dollars, convert to cents
       amountCents = config.surchargeValue * 100;

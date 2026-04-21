@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional, forwardRef } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { GatewayRegistry } from "../gateway/gateway.registry";
 import { GatewayProvider } from "../common/enums/gateway-provider.enum";
 import { CustomersService } from "../customers/customers.service";
@@ -326,7 +326,7 @@ export class PaymentMethodsService {
     customerId: string,
     correlationId?: string,
   ): Promise<SetupIntentResponseDto> {
-    const { customer, gatewayCustomerId, gateway } =
+    const { gatewayCustomerId, gateway } =
       await this.resolveSetupContext(customerId);
 
     const result = await gateway.createFinancialConnectionsSetup({
@@ -347,7 +347,7 @@ export class PaymentMethodsService {
     customerId: string,
     correlationId?: string,
   ): Promise<SetupIntentResponseDto> {
-    const { customer, gatewayCustomerId, gateway } =
+    const { gatewayCustomerId, gateway } =
       await this.resolveSetupContext(customerId);
 
     const result = await gateway.createCardSetup({
@@ -369,7 +369,7 @@ export class PaymentMethodsService {
     setupIntentId: string,
     correlationId?: string,
   ): Promise<PaymentMethodResponseDto> {
-    const { customer, gatewayCustomerId, gateway } =
+    const { gatewayCustomerId, gateway } =
       await this.resolveSetupContext(customerId);
 
     // Retrieve SI first — if already confirmed (manual ACH with confirm:true), skip confirm call
