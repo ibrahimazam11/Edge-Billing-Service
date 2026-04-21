@@ -362,8 +362,8 @@ describe("CustomersService", () => {
 
       // billingCustomerId must be a non-empty UUID string
       const call = mockGateway.createCustomer.mock.calls[0][0];
-      expect(call.metadata.billingCustomerId).toBeTruthy();
-      expect(typeof call.metadata.billingCustomerId).toBe("string");
+      expect(call.metadata!.billingCustomerId).toBeTruthy();
+      expect(typeof call.metadata!.billingCustomerId).toBe("string");
     });
 
     it("should pass monolithCustomerId in Stripe metadata", async () => {
@@ -388,9 +388,9 @@ describe("CustomersService", () => {
       await service.createFromEvent(payload, "corr-meta-3");
 
       const call = mockGateway.createCustomer.mock.calls[0][0];
-      expect(call.metadata.billingCustomerId).not.toBeNull();
-      expect(call.metadata.billingCustomerId).not.toBeUndefined();
-      expect(call.metadata.billingCustomerId.length).toBeGreaterThan(0);
+      expect(call.metadata!.billingCustomerId).not.toBeNull();
+      expect(call.metadata!.billingCustomerId).not.toBeUndefined();
+      expect(call.metadata!.billingCustomerId.length).toBeGreaterThan(0);
     });
   });
 

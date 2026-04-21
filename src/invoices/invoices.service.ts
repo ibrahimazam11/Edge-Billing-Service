@@ -1004,7 +1004,7 @@ export class InvoicesService {
         description: surcharge.description,
         amountCents: surcharge.amountCents,
         quantity: 1,
-        breakdown: null,
+        breakdown: {} as (typeof newLineItems)[0]["breakdown"],
         createdAt: now,
       });
       adjustedTotal += surcharge.amountCents;

@@ -912,11 +912,22 @@ describe("SubscriptionsService", () => {
 
   describe("buildEmployeeLineItems (via createFromEvent)", () => {
     const makeSubscriptionPayload = (
-      employees: Array<Record<string, unknown>>,
+      employees: Array<{
+        employeeId: string;
+        employeeName: string;
+        customerCost: number;
+        salary: number;
+        platformFee: number;
+        bonus: number;
+        raise: number;
+        discount: number;
+      }>,
     ) => ({
       monolithCustomerId: "mono-123",
       planName: "standard-monthly",
       amountCents: 10000,
+      currency: "usd",
+      billingInterval: "monthly",
       billingStartDate: "2026-03-01T00:00:00.000Z",
       onboardingDate: "2026-02-15T00:00:00.000Z",
       employees,
