@@ -12,9 +12,9 @@ export class IssueCreditNoteDto {
   @IsNotEmpty()
   customerId!: string;
 
+  @IsOptional()
   @IsUUID()
-  @IsNotEmpty()
-  invoiceId!: string;
+  invoiceId?: string;
 
   @IsInt()
   @Min(1)

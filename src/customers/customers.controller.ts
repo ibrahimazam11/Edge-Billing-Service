@@ -19,6 +19,36 @@ import { ApiPaginatedResponse } from "../common/decorators/api-paginated-respons
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
+  @Get("by-monolith-id/:monolithCustomerId")
+  @ApiOperation({ summary: "Get customer by monolith customer ID" })
+  @ApiOkResponse({ type: CustomerResponseDto })
+  @ApiNotFoundResponse({ description: "Customer not found" })
+  async findByMonolithId(
+    @Param("monolithCustomerId") monolithCustomerId: string,
+  ): Promise<CustomerResponseDto> {
+    const customer =
+      await this.customersService.findByMonolithId(monolithCustomerId);
+    if (!customer) {
+      throw new CustomerNotFoundException(monolithCustomerId);
+    }
+    return customer;
+  }
+
+  @Get("by-stripe-id/:stripeCustomerId")
+  @ApiOperation({ summary: "Get customer by Stripe customer ID" })
+  @ApiOkResponse({ type: CustomerResponseDto })
+  @ApiNotFoundResponse({ description: "Customer not found" })
+  async findByStripeCustomerId(
+    @Param("stripeCustomerId") stripeCustomerId: string,
+  ): Promise<CustomerResponseDto> {
+    const customer =
+      await this.customersService.findByStripeCustomerId(stripeCustomerId);
+    if (!customer) {
+      throw new CustomerNotFoundException(stripeCustomerId);
+    }
+    return customer;
+  }
+
   @Get(":id")
   @ApiOperation({ summary: "Get customer by ID" })
   @ApiOkResponse({ type: CustomerResponseDto })

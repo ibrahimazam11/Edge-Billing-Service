@@ -100,6 +100,7 @@ describe("Credit Application on Invoice Generation (e2e)", () => {
       expect(invoiceRows.rows).toHaveLength(1);
       const invoice = invoiceRows.rows[0];
       expect(invoice.total_amount_cents).toBe(2000); // 5000 - 3000
+      expect(invoice.metadata).toEqual({ creditAdjustmentCents: 3000 });
 
       // Verify credit_applied line item with negative amount
       const lineItems = await testDb.execute(
@@ -163,6 +164,7 @@ describe("Credit Application on Invoice Generation (e2e)", () => {
       expect(invoice.total_amount_cents).toBe(0);
       expect(invoice.status).toBe("paid");
       expect(invoice.paid_at).not.toBeNull();
+      expect(invoice.metadata).toEqual({ creditAdjustmentCents: 5000 });
 
       // Verify credit_applied line item
       const lineItems = await testDb.execute(
@@ -203,6 +205,7 @@ describe("Credit Application on Invoice Generation (e2e)", () => {
       const invoice = invoiceRows.rows[0];
       expect(invoice.total_amount_cents).toBe(5000);
       expect(invoice.status).toBe("finalized"); // Not paid
+      expect(invoice.metadata).toBeNull();
 
       // No credit_applied line item
       const lineItems = await testDb.execute(
@@ -241,6 +244,7 @@ describe("Credit Application on Invoice Generation (e2e)", () => {
       const invoice = invoiceRows.rows[0];
       expect(invoice.total_amount_cents).toBe(0);
       expect(invoice.status).toBe("paid");
+      expect(invoice.metadata).toEqual({ creditAdjustmentCents: 5000 });
 
       // Only applied 5000 (invoice total), not 12000
       const lineItems = await testDb.execute(
@@ -307,6 +311,7 @@ describe("Credit Application on Invoice Generation (e2e)", () => {
       const invoice = invoiceRows.rows[0];
       expect(invoice.total_amount_cents).toBe(9000); // 15000 - 6000
       expect(invoice.status).toBe("finalized"); // Partially covered, still finalized
+      expect(invoice.metadata).toEqual({ creditAdjustmentCents: 6000 });
 
       // Verify credit_applied line item
       const lineItems = await testDb.execute(

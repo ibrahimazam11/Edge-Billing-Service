@@ -21,6 +21,8 @@ dist/
 
 # BMAD
 _bmad/
+.bmad-output/
+docs/
 
 # OS
 .DS_Store

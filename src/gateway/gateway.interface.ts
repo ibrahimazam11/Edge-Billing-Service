@@ -4,11 +4,17 @@ import type {
   ChargeResult,
   RefundResult,
   BalanceTransactionResult,
+  SetupIntentResult,
   CreateCustomerInput,
   UpdateCustomerInput,
   CreateChargeInput,
   CreateRefundInput,
   GetBalanceTransactionsInput,
+  CreateBankAccountSetupInput,
+  CreateFinancialConnectionsSetupInput,
+  CreateCardSetupInput,
+  ConfirmSetupInput,
+  VerifyMicrodepositsInput,
 } from "./gateway.types";
 import type { NormalizedWebhookEvent } from "../common/interfaces/normalized-webhook-event.interface";
 
@@ -55,4 +61,28 @@ export interface PaymentGateway {
     rawPayload: string | Buffer,
     headers: Record<string, string>,
   ): Promise<NormalizedWebhookEvent | null>;
+}
+
+/**
+ * Extended gateway interface for payment processors that support SetupIntents
+ * (pre-authorized payment method setup). Currently implemented by Stripe only.
+ */
+export interface SetupIntentGateway {
+  createBankAccountSetup(
+    input: CreateBankAccountSetupInput,
+  ): Promise<SetupIntentResult>;
+
+  createFinancialConnectionsSetup(
+    input: CreateFinancialConnectionsSetupInput,
+  ): Promise<SetupIntentResult>;
+
+  createCardSetup(input: CreateCardSetupInput): Promise<SetupIntentResult>;
+
+  retrieveSetupIntent(input: ConfirmSetupInput): Promise<SetupIntentResult>;
+
+  confirmSetup(input: ConfirmSetupInput): Promise<SetupIntentResult>;
+
+  verifyMicrodeposits(
+    input: VerifyMicrodepositsInput,
+  ): Promise<SetupIntentResult>;
 }

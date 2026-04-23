@@ -5,6 +5,7 @@ import { SubscriptionsRepository } from "./subscriptions.repository";
 import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
+import { InvoicesService } from "../invoices/invoices.service";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
 import { NoPaymentMethodException } from "../common/exceptions/no-payment-method.exception";
@@ -38,6 +39,13 @@ const mockSqsProducerService = {
   publish: jest.fn().mockResolvedValue(undefined),
 };
 
+const mockInvoicesService = {
+  findOpenByCustomerId: jest.fn().mockResolvedValue(null),
+  createDraftInvoice: jest.fn().mockResolvedValue(undefined),
+  updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
+  voidDraftInvoicesForCustomer: jest.fn().mockResolvedValue(0),
+};
+
 const mockCustomer = {
   id: "cust-123",
   monolithCustomerId: "mono-123",
@@ -45,6 +53,8 @@ const mockCustomer = {
   name: "Test Customer",
   email: "test@example.com",
   status: "active",
+  chargeDay: 15,
+  isPrepaid: true,
   metadata: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -106,6 +116,7 @@ describe("SubscriptionsService", () => {
         { provide: CustomersService, useValue: mockCustomersService },
         { provide: PaymentMethodsService, useValue: mockPaymentMethodsService },
         { provide: SqsProducerService, useValue: mockSqsProducerService },
+        { provide: InvoicesService, useValue: mockInvoicesService },
       ],
     }).compile();
 
@@ -221,8 +232,8 @@ describe("SubscriptionsService", () => {
       expect(createCall.billingInterval).toBe("monthly");
     });
 
-    it("should set next_billing_date equal to billing_period_end", async () => {
-      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+    it("should set next_billing_date to invoice due date based on chargeDay", async () => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer); // chargeDay=15, isPrepaid=true
       mockPaymentMethodsService.findAll.mockResolvedValue({
         data: [mockPaymentMethod],
         cursor: null,
@@ -230,11 +241,14 @@ describe("SubscriptionsService", () => {
       });
       mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
 
-      await service.create(createDto);
+      await service.create(createDto); // billingStartDate = 2026-03-01
 
       const createCall = mockSubscriptionsRepo.create.mock
         .calls[0][0] as Record<string, unknown>;
-      expect(createCall.nextBillingDate).toEqual(createCall.billingPeriodEnd);
+      // chargeDay=15, prepaid, billingStart=March 1 → dueDate = March 15
+      expect(createCall.nextBillingDate).toEqual(
+        new Date("2026-03-15T00:00:00.000Z"),
+      );
     });
   });
 
@@ -540,7 +554,7 @@ describe("SubscriptionsService", () => {
       expect(updateCall.status).toBe("canceled");
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
-      expect(updateCall.nextBillingDate).toBeUndefined();
+      expect(updateCall.nextBillingDate).toBeNull();
     });
 
     it("should publish subscription.state.changed event after DB update", async () => {
@@ -893,6 +907,192 @@ describe("SubscriptionsService", () => {
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
       expect(updateCall.nextBillingDate).toBeUndefined();
+    });
+  });
+
+  describe("buildEmployeeLineItems (via createFromEvent)", () => {
+    const makeSubscriptionPayload = (
+      employees: Array<{
+        employeeId: string;
+        employeeName: string;
+        customerCost: number;
+        salary: number;
+        platformFee: number;
+        bonus: number;
+        raise: number;
+        discount: number;
+      }>,
+    ) => ({
+      monolithCustomerId: "mono-123",
+      planName: "standard-monthly",
+      amountCents: 10000,
+      currency: "usd",
+      billingInterval: "monthly",
+      billingStartDate: "2026-03-01T00:00:00.000Z",
+      onboardingDate: "2026-02-15T00:00:00.000Z",
+      employees,
+    });
+
+    beforeEach(() => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+      mockSubscriptionsRepo.findByCustomerAndStatuses.mockResolvedValue([]);
+      mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
+      mockSubscriptionsRepo.findById.mockResolvedValue(mockSubscriptionRow);
+      mockInvoicesService.findOpenByCustomerId.mockResolvedValue(null);
+    });
+
+    it("should set description to just employee name (no ' - Monthly Cost' suffix)", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-001",
+          employeeName: "John Doe",
+          customerCost: 5000,
+          salary: 4000,
+          platformFee: 500,
+          bonus: 300,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-1");
+
+      expect(mockInvoicesService.createDraftInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lineItems: expect.arrayContaining([
+            expect.objectContaining({
+              type: "employee_cost",
+              description: "John Doe",
+            }),
+          ]),
+        }),
+        "corr-emp-1",
+      );
+
+      // Verify no " - Monthly Cost" suffix
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.description).toBe("John Doe");
+      expect(lineItem.description).not.toContain(" - Monthly Cost");
+    });
+
+    it("should include employeeId in breakdown", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-002",
+          employeeName: "Jane Smith",
+          customerCost: 6000,
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-2");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.breakdown).toEqual(
+        expect.objectContaining({
+          employeeId: "emp-002",
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        }),
+      );
+    });
+
+    it("should produce one line item per employee with correct fields", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-a",
+          employeeName: "Alice",
+          customerCost: 3000,
+          salary: 2500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+        {
+          employeeId: "emp-b",
+          employeeName: "Bob",
+          customerCost: 4000,
+          salary: 3500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-3");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      expect(call.lineItems).toHaveLength(2);
+
+      const alice = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Alice",
+      );
+      const bob = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Bob",
+      );
+
+      expect(alice).toBeDefined();
+      expect(alice.breakdown.employeeId).toBe("emp-a");
+      expect(alice.amountCents).toBe(3000);
+
+      expect(bob).toBeDefined();
+      expect(bob.breakdown.employeeId).toBe("emp-b");
+      expect(bob.amountCents).toBe(4000);
+    });
+  });
+
+  describe("updateState — voidDraftInvoicesForCustomer on pause/cancel", () => {
+    const activeRow = { ...mockSubscriptionRow, status: "active" };
+
+    it("should call voidDraftInvoicesForCustomer (not voidOpenInvoicesForCustomer) on pause", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = {
+        ...activeRow,
+        status: "paused",
+        nextBillingDate: null,
+      };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState("sub-123", { status: "paused" }, "corr-pause");
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-pause");
+    });
+
+    it("should call voidDraftInvoicesForCustomer on cancel", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = { ...activeRow, status: "canceled" };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState(
+        "sub-123",
+        { status: "canceled" },
+        "corr-cancel",
+      );
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-cancel");
     });
   });
 });

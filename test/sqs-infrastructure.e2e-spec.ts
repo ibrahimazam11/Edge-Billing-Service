@@ -82,6 +82,7 @@ describe("SQS Infrastructure (e2e)", () => {
       const payload = {
         invoiceId: "a0000000-0000-4000-a000-000000000001",
         customerId: "c0000000-0000-4000-a000-000000000001",
+        monolithCustomerId: "mono-test-001",
         amountCents: 5000,
         currency: "usd",
         paymentMethodId: "b0000000-0000-4000-a000-000000000001",

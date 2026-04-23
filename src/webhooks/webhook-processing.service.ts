@@ -17,12 +17,14 @@ import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { IdempotencyService } from "../integration/sqs/idempotency.service";
 import { ChargesRepository } from "../charges/charges.repository";
 import { InvoicesRepository } from "../invoices/invoices.repository";
+import { CustomersRepository } from "../customers/customers.repository";
 import { validateTransition } from "../common/utils/state-machine.util";
 import {
   INVOICE_TRANSITIONS,
   type InvoiceStatus,
 } from "../invoices/invoice-state-machine";
 import type { StripeWebhookReceivedPayload } from "../integration/sqs/contracts/inbound-events";
+import { WebhookEventsRepository } from "./webhook-events.repository";
 
 /**
  * Fallback mapping from raw gateway event types to normalized types.
@@ -57,6 +59,8 @@ export class WebhookProcessingService {
     private readonly idempotencyService: IdempotencyService,
     private readonly chargesRepository: ChargesRepository,
     private readonly invoicesRepository: InvoicesRepository,
+    private readonly customersRepository: CustomersRepository,
+    private readonly webhookEventsRepository: WebhookEventsRepository,
     @Optional()
     @Inject(SUBSCRIPTIONS_SERVICE_TOKEN)
     private readonly subscriptionsService?: {
@@ -75,6 +79,25 @@ export class WebhookProcessingService {
     const { stripeEventId } = payload;
     const idempotencyType = `${gatewayProvider}.webhook`;
 
+    // 0. Log incoming webhook event
+    let webhookEventId: string | undefined;
+    try {
+      const webhookEvent = await this.webhookEventsRepository.logEvent({
+        stripeEventId,
+        eventType: payload.type,
+        gatewayProvider,
+        payload: payload.data,
+      });
+      webhookEventId = webhookEvent.id;
+    } catch (logError) {
+      this.logger.warn({
+        message: "Failed to log webhook event (non-blocking)",
+        stripeEventId,
+        error: logError instanceof Error ? logError.message : String(logError),
+        correlationId,
+      });
+    }
+
     // 1. Gateway event ID idempotency check (inner layer)
     const alreadyProcessed = await this.idempotencyService.isProcessed(
       stripeEventId,
@@ -86,6 +109,13 @@ export class WebhookProcessingService {
         stripeEventId,
         correlationId,
       });
+      if (webhookEventId) {
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "ignored", {
+            errorMessage: "Duplicate event — already processed",
+          })
+          .catch(() => {});
+      }
       return;
     }
 
@@ -121,6 +151,14 @@ export class WebhookProcessingService {
         correlationId,
       });
 
+      if (webhookEventId) {
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "ignored", {
+            errorMessage: `Unsupported event type: ${payload.type}`,
+          })
+          .catch(() => {});
+      }
+
       // Still mark as processed to avoid re-processing
       await this.idempotencyService.markProcessed(
         stripeEventId,
@@ -130,21 +168,49 @@ export class WebhookProcessingService {
     }
 
     // 4. Route by normalized event type
-    switch (normalizedEvent.eventType) {
-      case WEBHOOK_PAYMENT_SUCCEEDED:
-        await this.handlePaymentSucceeded(normalizedEvent, correlationId);
-        break;
-      case WEBHOOK_PAYMENT_FAILED:
-        await this.handlePaymentFailed(normalizedEvent, correlationId);
-        break;
-      default:
-        this.logger.warn({
-          message: "Unhandled normalized event type",
-          eventType: normalizedEvent.eventType,
-          stripeEventId,
-          correlationId,
-        });
-        break;
+    try {
+      switch (normalizedEvent.eventType) {
+        case WEBHOOK_PAYMENT_SUCCEEDED:
+          await this.handlePaymentSucceeded(normalizedEvent, correlationId);
+          break;
+        case WEBHOOK_PAYMENT_FAILED:
+          await this.handlePaymentFailed(normalizedEvent, correlationId);
+          break;
+        default:
+          this.logger.warn({
+            message: "Unhandled normalized event type",
+            eventType: normalizedEvent.eventType,
+            stripeEventId,
+            correlationId,
+          });
+          break;
+      }
+
+      // Update webhook event log with success and resolved entity IDs
+      if (webhookEventId) {
+        const charge = await this.chargesRepository.findByStripePaymentIntentId(
+          normalizedEvent.gatewayChargeId,
+        );
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "succeeded", {
+            customerId: charge?.customerId,
+            chargeId: charge?.id,
+            invoiceId: charge?.invoiceId,
+          })
+          .catch(() => {});
+      }
+    } catch (routingError) {
+      if (webhookEventId) {
+        await this.webhookEventsRepository
+          .updateStatus(webhookEventId, "failed", {
+            errorMessage:
+              routingError instanceof Error
+                ? routingError.message
+                : String(routingError),
+          })
+          .catch(() => {});
+      }
+      throw routingError;
     }
 
     // 5. Mark gateway event ID as processed
@@ -279,12 +345,19 @@ export class WebhookProcessingService {
         }
       }
 
+      // Resolve monolithCustomerId for outbound events
+      const customerRecord = await this.customersRepository.findById(
+        invoice.customerId,
+      );
+      const monolithCustomerId = customerRecord?.monolithCustomerId ?? "";
+
       // Publish events (outside transaction)
       await this.sqsProducerService.publish(
         "payment.succeeded",
         {
           invoiceId: invoice.id,
           customerId: invoice.customerId,
+          monolithCustomerId,
           amountCents: invoice.totalAmountCents,
           currency: invoice.currency,
           paymentMethodId: charge.paymentMethodId,
@@ -298,6 +371,7 @@ export class WebhookProcessingService {
         {
           invoiceId: invoice.id,
           customerId: invoice.customerId,
+          monolithCustomerId,
           totalAmountCents: invoice.totalAmountCents,
           currency: invoice.currency,
           paidAt: new Date().toISOString(),
@@ -372,12 +446,19 @@ export class WebhookProcessingService {
       correlationId,
     });
 
+    // Resolve monolithCustomerId for outbound event
+    const failedCustomer = await this.customersRepository.findById(
+      charge.customerId,
+    );
+    const failedMonolithCustomerId = failedCustomer?.monolithCustomerId ?? "";
+
     // Publish payment.failed event
     await this.sqsProducerService.publish(
       "payment.failed",
       {
         invoiceId: charge.invoiceId,
         customerId: charge.customerId,
+        monolithCustomerId: failedMonolithCustomerId,
         amountCents: invoice?.totalAmountCents ?? charge.amountCents,
         currency: invoice?.currency ?? charge.currency,
         failureReason,

@@ -305,6 +305,7 @@ describe("DunningService", () => {
       id: "inv-1",
       customerId: "cust-1",
       subscriptionId: "sub-1",
+      type: "recurring",
       status: "finalized",
       totalAmountCents: 5000,
       currency: "usd",
@@ -633,6 +634,7 @@ describe("DunningService", () => {
       id: "inv-1",
       customerId: "cust-1",
       subscriptionId: "sub-1",
+      type: "recurring",
       status: "finalized",
       totalAmountCents: 10000,
       currency: "usd",
@@ -725,6 +727,7 @@ describe("DunningService", () => {
         {
           invoiceId: "inv-1",
           customerId: "cust-1",
+          monolithCustomerId: "",
           totalAttempts: 2,
           failureHistory: [
             {
@@ -884,6 +887,7 @@ describe("DunningService", () => {
       id: "inv-1",
       customerId: "cust-1",
       subscriptionId: "sub-1",
+      type: "recurring",
       status: "finalized",
       totalAmountCents: 5000,
       currency: "usd",
@@ -991,6 +995,7 @@ describe("DunningService", () => {
         id: "inv-1",
         customerId: "cust-1",
         subscriptionId: "sub-1",
+        type: "recurring",
         status: "paid",
         totalAmountCents: 5000,
         currency: "usd",
@@ -1046,6 +1051,7 @@ describe("DunningService", () => {
       id: "inv-1",
       customerId: "cust-1",
       subscriptionId: "sub-1",
+      type: "recurring",
       status: "finalized",
       totalAmountCents: 5000,
       currency: "usd",

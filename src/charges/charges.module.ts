@@ -20,7 +20,7 @@ import { OnboardingChargesController } from "./onboarding-charges.controller";
     DatabaseModule,
     GatewayModule,
     LedgerModule,
-    PaymentMethodsModule,
+    forwardRef(() => PaymentMethodsModule),
     CustomersModule,
     DualWriteModule,
     forwardRef(() => SqsIntegrationModule),

@@ -4,6 +4,7 @@ export class InvoiceResponseDto {
   id!: string;
   customerId!: string;
   subscriptionId!: string | null;
+  type!: string;
   status!: string;
   totalAmountCents!: number;
   currency!: string;

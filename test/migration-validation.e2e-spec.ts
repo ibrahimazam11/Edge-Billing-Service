@@ -216,6 +216,7 @@ describe("Migration Validation (e2e)", () => {
         {
           invoiceId: "inv-test",
           customerId: CUST_A.id,
+          monolithCustomerId: "mono-test",
           amountCents: 10000,
           currency: "usd",
           paymentMethodId: "pm-test",

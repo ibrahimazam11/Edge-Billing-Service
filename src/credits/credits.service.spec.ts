@@ -279,6 +279,34 @@ describe("CreditsService", () => {
 
       expect(result.createdBy).toBeNull();
     });
+
+    it("should create credit note without invoiceId (general account credit)", async () => {
+      const dto = { ...MOCK_DTO };
+      delete (dto as any).invoiceId;
+
+      const result = await service.issueCreditNote(dto, "corr-no-inv");
+
+      expect(result.invoiceId).toBeNull();
+      expect(mockInvoicesRepo.findById).not.toHaveBeenCalled();
+      expect(mockCreditNotesRepo.createInTx).toHaveBeenCalledWith(
+        expect.objectContaining({ invoiceId: null }),
+        txMock,
+      );
+      expect(mockCreditBalancesRepo.upsertInTx).toHaveBeenCalled();
+      expect(mockLedgerService.recordCreditNoteIssued).toHaveBeenCalled();
+    });
+
+    it("should skip invoice validation when invoiceId is null", async () => {
+      const dto = {
+        customerId: MOCK_CUSTOMER.id,
+        amountCents: 5000,
+        reason: "Goodwill credit",
+      };
+
+      await service.issueCreditNote(dto, "corr-skip-val");
+
+      expect(mockInvoicesRepo.findById).not.toHaveBeenCalled();
+    });
   });
 
   describe("getCreditBalance", () => {
@@ -640,6 +668,161 @@ describe("CreditsService", () => {
       );
 
       logSpy.mockRestore();
+    });
+
+    it("should write creditAdjustmentCents metadata when partial credit applied", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue({
+        id: "bal-001",
+        customerId: CUSTOMER_ID,
+        balanceCents: 3000,
+        currency: "usd",
+        updatedAt: new Date(),
+      });
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      expect(mockInvoicesRepo.update).toHaveBeenCalledWith(
+        INVOICE_ID,
+        expect.objectContaining({
+          totalAmountCents: 2000,
+          metadata: { creditAdjustmentCents: 3000 },
+        }),
+        txApplyMock,
+      );
+    });
+
+    it("should write creditAdjustmentCents metadata when full credit applied (balance equals total)", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue({
+        id: "bal-001",
+        customerId: CUSTOMER_ID,
+        balanceCents: 5000,
+        currency: "usd",
+        updatedAt: new Date(),
+      });
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      expect(mockInvoicesRepo.update).toHaveBeenCalledWith(
+        INVOICE_ID,
+        expect.objectContaining({
+          totalAmountCents: 0,
+          metadata: { creditAdjustmentCents: 5000 },
+        }),
+        txApplyMock,
+      );
+    });
+
+    it("should write creditAdjustmentCents capped at invoice total when credit exceeds invoice", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue({
+        id: "bal-001",
+        customerId: CUSTOMER_ID,
+        balanceCents: 10000,
+        currency: "usd",
+        updatedAt: new Date(),
+      });
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      // creditAdjustmentCents should be the invoice total (5000), not the full balance (10000)
+      expect(mockInvoicesRepo.update).toHaveBeenCalledWith(
+        INVOICE_ID,
+        expect.objectContaining({
+          totalAmountCents: 0,
+          metadata: { creditAdjustmentCents: 5000 },
+        }),
+        txApplyMock,
+      );
+    });
+
+    it("should match creditAdjustmentCents to the absolute value of the line item amount", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue({
+        id: "bal-001",
+        customerId: CUSTOMER_ID,
+        balanceCents: 2500,
+        currency: "usd",
+        updatedAt: new Date(),
+      });
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      // Line item is -2500, metadata should be 2500 (absolute)
+      expect(mockInvoicesRepo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: -2500,
+        }),
+        txApplyMock,
+      );
+      expect(mockInvoicesRepo.update).toHaveBeenCalledWith(
+        INVOICE_ID,
+        expect.objectContaining({
+          metadata: { creditAdjustmentCents: 2500 },
+        }),
+        txApplyMock,
+      );
+    });
+
+    it("should NOT write metadata when no credit balance record exists", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue(null);
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      expect(mockInvoicesRepo.update).not.toHaveBeenCalled();
+    });
+
+    it("should NOT write metadata when customer has zero credit balance", async () => {
+      mockCreditBalancesRepo.findByCustomerInTx.mockResolvedValue({
+        id: "bal-001",
+        customerId: CUSTOMER_ID,
+        balanceCents: 0,
+        currency: "usd",
+        updatedAt: new Date(),
+      });
+
+      await service.applyCreditsToInvoice(
+        INVOICE_ID,
+        CUSTOMER_ID,
+        INVOICE_TOTAL,
+        CURRENCY,
+        CORRELATION_ID,
+        txApplyMock as never,
+      );
+
+      expect(mockInvoicesRepo.update).not.toHaveBeenCalled();
     });
   });
 });

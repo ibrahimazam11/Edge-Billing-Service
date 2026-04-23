@@ -5,8 +5,11 @@ import { InvoicesRepository } from "./invoices.repository";
 import { SubscriptionsRepository } from "../subscriptions/subscriptions.repository";
 import { LedgerService } from "../ledger/ledger.service";
 import { CreditsService } from "../credits/credits.service";
+import { SurchargeConfigService } from "../surcharges/surcharge-config.service";
+import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { DRIZZLE_PROVIDER } from "../database/database.provider";
+import { CustomersService } from "../customers/customers.service";
 import { StateTransitionException } from "../common/exceptions/billing.exception";
 import { InvoiceNotFoundException } from "./invoice-not-found.exception";
 import { InvoiceAlreadyPaidException } from "./exceptions/invoice-already-paid.exception";
@@ -36,6 +39,7 @@ const mockInvoiceRow = {
   id: "inv-123",
   customerId: "cust-123",
   subscriptionId: "sub-123",
+  type: "recurring",
   status: "finalized",
   totalAmountCents: 5000,
   currency: "usd",
@@ -56,6 +60,7 @@ const mockLineItemRow = {
   description: "standard-monthly - monthly subscription",
   amountCents: 5000,
   quantity: 1,
+  breakdown: null,
   createdAt: now,
 };
 
@@ -78,6 +83,14 @@ const mockLedgerService = {
 
 const mockSqsProducerService = {
   publish: jest.fn().mockResolvedValue(undefined),
+};
+
+const mockCustomersService = {
+  findById: jest.fn().mockResolvedValue({
+    id: "cust-123",
+    chargeDay: 15,
+    isPrepaid: true,
+  }),
 };
 
 describe("InvoicesService", () => {
@@ -118,6 +131,7 @@ describe("InvoicesService", () => {
         { provide: DRIZZLE_PROVIDER, useValue: mockDb },
         { provide: LedgerService, useValue: mockLedgerService },
         { provide: SqsProducerService, useValue: mockSqsProducerService },
+        { provide: CustomersService, useValue: mockCustomersService },
       ],
     }).compile();
 
@@ -349,6 +363,7 @@ describe("InvoicesService", () => {
           { provide: LedgerService, useValue: mockLedgerService },
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -743,6 +758,7 @@ describe("InvoicesService", () => {
           { provide: LedgerService, useValue: mockLedgerService },
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -846,6 +862,7 @@ describe("InvoicesService", () => {
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -976,6 +993,7 @@ describe("InvoicesService", () => {
           { provide: SqsProducerService, useValue: mockSqsProducerService },
           { provide: CreditsService, useValue: mockCreditsService },
           { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          { provide: CustomersService, useValue: mockCustomersService },
         ],
       }).compile();
 
@@ -1010,6 +1028,557 @@ describe("InvoicesService", () => {
       expect(
         mockChargesService.executePaymentForInvoice,
       ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("voidDraftInvoicesForCustomer", () => {
+    it("should void a draft invoice and return 1", async () => {
+      const draftInvoice = {
+        ...mockInvoiceRow,
+        id: "inv-draft-1",
+        status: "draft",
+      };
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(draftInvoice);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-1",
+      );
+
+      expect(count).toBe(1);
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-draft-1",
+        expect.objectContaining({
+          status: "void",
+          voidedAt: expect.any(Date),
+          updatedAt: expect.any(Date),
+        }),
+      );
+    });
+
+    it("should return 0 when no draft invoice exists", async () => {
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-2",
+      );
+
+      expect(count).toBe(0);
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenByCustomerId)", async () => {
+      // Simulate: only finalized invoices exist -> findDraftByCustomerId returns null
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      const count = await service.voidDraftInvoicesForCustomer(
+        "cust-123",
+        "corr-void-draft-3",
+      );
+
+      expect(count).toBe(0);
+      // Verify it called findDraftByCustomerId (not findOpenByCustomerId)
+      expect(
+        (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
+      ).toHaveBeenCalledWith("cust-123");
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("should call findDraftByCustomerId on the repository", async () => {
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(null);
+
+      await service.voidDraftInvoicesForCustomer("cust-456");
+
+      expect(
+        (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
+      ).toHaveBeenCalledWith("cust-456");
+    });
+
+    it("should log structured message when draft invoice is voided", async () => {
+      const draftInvoice = {
+        ...mockInvoiceRow,
+        id: "inv-draft-log",
+        status: "draft",
+      };
+      (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
+        jest.fn().mockResolvedValue(draftInvoice);
+
+      const logSpy = jest
+        .spyOn(Logger.prototype, "log")
+        .mockImplementation(() => {});
+
+      await service.voidDraftInvoicesForCustomer("cust-123", "corr-void-log");
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Draft invoice voided on subscription pause/cancel",
+          invoiceId: "inv-draft-log",
+          customerId: "cust-123",
+          correlationId: "corr-void-log",
+        }),
+      );
+
+      logSpy.mockRestore();
+    });
+  });
+});
+
+// --- Surcharge Tests ---
+
+const mockSurchargeConfig = {
+  getConfig: jest.fn(),
+};
+
+const mockPaymentMethodsService = {
+  getDefaultPaymentMethod: jest.fn(),
+};
+
+const mockOpenInvoice = {
+  id: "inv-open-1",
+  customerId: "cust-123",
+  subscriptionId: "sub-123",
+  type: "recurring",
+  status: "draft",
+  totalAmountCents: 500000,
+  currency: "usd",
+  billingPeriodStart: new Date("2026-03-01"),
+  billingPeriodEnd: new Date("2026-04-01"),
+  dueDate: new Date("2026-04-01"),
+  paidAt: null,
+  voidedAt: null,
+  metadata: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const mockEmployeeLineItem = {
+  id: "li-emp-1",
+  invoiceId: "inv-open-1",
+  type: "employee_cost",
+  description: "John Doe",
+  amountCents: 500000,
+  quantity: 1,
+  breakdown: null,
+  createdAt: new Date(),
+};
+
+describe("InvoicesService - Surcharge", () => {
+  let service: InvoicesService;
+  let repo: jest.Mocked<InvoicesRepository>;
+  const txMock2 = { id: "tx-surcharge" };
+  const mockDb2 = {
+    transaction: jest.fn((cb: (tx: typeof txMock2) => Promise<unknown>) =>
+      cb(txMock2),
+    ),
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    repo = {
+      findById: jest.fn(),
+      findByIdWithLineItems: jest.fn(),
+      findAll: jest.fn(),
+      findPendingOnboarding: jest.fn(),
+      findDuplicateForSubscription: jest.fn().mockResolvedValue([]),
+      getLineItemsByInvoiceId: jest.fn().mockResolvedValue([]),
+      getLineItemsByInvoiceIds: jest.fn(),
+      create: jest.fn().mockResolvedValue(mockInvoiceRow),
+      createLineItem: jest.fn(),
+      createLineItems: jest.fn(),
+      update: jest
+        .fn()
+        .mockResolvedValue({ ...mockInvoiceRow, status: "finalized" }),
+      updateWithConcurrencyCheck: jest.fn(),
+      deleteLineItemsByInvoiceId: jest.fn(),
+      deleteLineItemsByInvoiceIdAndType: jest.fn(),
+      findOpenByCustomerId: jest.fn(),
+      findForBillingHistory: jest.fn(),
+    } as unknown as jest.Mocked<InvoicesRepository>;
+
+    const module = await Test.createTestingModule({
+      providers: [
+        InvoicesService,
+        { provide: InvoicesRepository, useValue: repo },
+        {
+          provide: SubscriptionsRepository,
+          useValue: { findDueForBilling: jest.fn().mockResolvedValue([]) },
+        },
+        { provide: DRIZZLE_PROVIDER, useValue: mockDb2 },
+        {
+          provide: LedgerService,
+          useValue: {
+            recordInvoiceFinalized: jest.fn(),
+            recordInvoiceVoided: jest.fn(),
+          },
+        },
+        { provide: SqsProducerService, useValue: { publish: jest.fn() } },
+        {
+          provide: CustomersService,
+          useValue: {
+            findById: jest.fn().mockResolvedValue({
+              id: "cust-123",
+              chargeDay: 15,
+              isPrepaid: true,
+            }),
+          },
+        },
+        { provide: SurchargeConfigService, useValue: mockSurchargeConfig },
+        { provide: PaymentMethodsService, useValue: mockPaymentMethodsService },
+      ],
+    }).compile();
+
+    service = module.get<InvoicesService>(InvoicesService);
+  });
+
+  describe("createDraftInvoice with surcharge", () => {
+    const draftParams = {
+      customerId: "cust-123",
+      subscriptionId: null,
+      type: "one_time" as const,
+      lineItems: [
+        {
+          type: "one_time_charge",
+          description: "Setup Fee",
+          amountCents: 100000,
+          quantity: 1,
+        },
+      ],
+      totalAmountCents: 100000,
+      currency: "usd",
+      billingPeriodStart: new Date(),
+      billingPeriodEnd: new Date(),
+      dueDate: new Date(),
+    };
+
+    it("should add surcharge line item for card PM with percentage config", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.createDraftInvoice(draftParams, "corr-1");
+
+      // Invoice created with adjusted total: 100000 + 3% = 103000
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 103000 }),
+        txMock2,
+      );
+      // Line items include surcharge
+      expect(repo.createLineItems).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "surcharge",
+            amountCents: 3000,
+            description: "Credit card surcharge",
+          }),
+        ]),
+        txMock2,
+      );
+    });
+
+    it("should add flat fee surcharge (value in dollars, converted to cents)", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "flat_fee",
+        surchargeValue: 10,
+      });
+
+      await service.createDraftInvoice(draftParams, "corr-2");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 101000 }),
+        txMock2,
+      );
+      expect(repo.createLineItems).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "surcharge", amountCents: 1000 }),
+        ]),
+        txMock2,
+      );
+    });
+
+    it("should NOT add surcharge for ACH payment method", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.createDraftInvoice(draftParams, "corr-3");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 100000 }),
+        txMock2,
+      );
+    });
+
+    it("should NOT add surcharge when no PM is set", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(null);
+
+      await service.createDraftInvoice(draftParams, "corr-4");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 100000 }),
+        txMock2,
+      );
+    });
+
+    it("should NOT add surcharge when no surcharge config exists", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue(null);
+
+      await service.createDraftInvoice(draftParams, "corr-5");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 100000 }),
+        txMock2,
+      );
+    });
+
+    it("should NOT add surcharge when surchargeValue is 0", async () => {
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 0,
+      });
+
+      await service.createDraftInvoice(draftParams, "corr-6");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalAmountCents: 100000 }),
+        txMock2,
+      );
+    });
+  });
+
+  describe("recalculateSurchargeOnOpenInvoice", () => {
+    it("should add surcharge when config changes and card PM is default", async () => {
+      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([
+        mockEmployeeLineItem as any,
+      ]);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.recalculateSurchargeOnOpenInvoice(
+        "cust-123",
+        "corr-reCalc",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceIdAndType).toHaveBeenCalledWith(
+        "inv-open-1",
+        "surcharge",
+        txMock2,
+      );
+      expect(repo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "surcharge", amountCents: 15000 }),
+        txMock2,
+      );
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-open-1",
+        expect.objectContaining({ totalAmountCents: 515000 }),
+        txMock2,
+      );
+    });
+
+    it("should remove surcharge when PM switches to ACH", async () => {
+      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([
+        mockEmployeeLineItem as any,
+        {
+          ...mockEmployeeLineItem,
+          id: "li-sur-1",
+          type: "surcharge",
+          description: "Credit card surcharge",
+          amountCents: 15000,
+        },
+      ] as any);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+
+      await service.recalculateSurchargeOnOpenInvoice(
+        "cust-123",
+        "corr-pm-ach",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceIdAndType).toHaveBeenCalledWith(
+        "inv-open-1",
+        "surcharge",
+        txMock2,
+      );
+      expect(repo.createLineItem).not.toHaveBeenCalled();
+      // Total should be subtotal only (no surcharge)
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-open-1",
+        expect.objectContaining({ totalAmountCents: 500000 }),
+        txMock2,
+      );
+    });
+
+    it("should no-op when no open invoice exists", async () => {
+      repo.findOpenByCustomerId.mockResolvedValue(null);
+
+      await service.recalculateSurchargeOnOpenInvoice("cust-123", "corr-noop");
+
+      expect(repo.deleteLineItemsByInvoiceIdAndType).not.toHaveBeenCalled();
+      expect(repo.createLineItem).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("should recalculate surcharge from non-surcharge items only", async () => {
+      const existingSurcharge = {
+        ...mockEmployeeLineItem,
+        id: "li-sur-old",
+        type: "surcharge",
+        amountCents: 10000,
+      };
+      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([
+        mockEmployeeLineItem as any,
+        existingSurcharge as any,
+      ]);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.recalculateSurchargeOnOpenInvoice(
+        "cust-123",
+        "corr-recalc",
+      );
+
+      // Subtotal should be 500000 (employee only, old surcharge excluded)
+      expect(repo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 15000 }),
+        txMock2,
+      );
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-open-1",
+        expect.objectContaining({ totalAmountCents: 515000 }),
+        txMock2,
+      );
+    });
+  });
+
+  describe("updateOpenInvoiceLineItems with surcharge", () => {
+    const employees = [
+      {
+        employeeId: "emp-1",
+        employeeName: "John Doe",
+        customerCost: 300000,
+        salary: 250000,
+        platformFee: 50000,
+        bonus: 0,
+        raise: 0,
+        discount: 0,
+      },
+      {
+        employeeId: "emp-2",
+        employeeName: "Jane Smith",
+        customerCost: 200000,
+        salary: 170000,
+        platformFee: 30000,
+        bonus: 0,
+        raise: 0,
+        discount: 0,
+      },
+    ];
+
+    it("should include surcharge line item when card PM + config", async () => {
+      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "card",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-upd",
+      );
+
+      // Should create 3 line items: 2 employees + 1 surcharge
+      expect(repo.createLineItems).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "employee_cost",
+            description: "John Doe",
+          }),
+          expect.objectContaining({
+            type: "employee_cost",
+            description: "Jane Smith",
+          }),
+          expect.objectContaining({ type: "surcharge", amountCents: 15000 }),
+        ]),
+        txMock2,
+      );
+      // Total = 500000 + 15000
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-open-1",
+        expect.objectContaining({ totalAmountCents: 515000 }),
+        txMock2,
+      );
+    });
+
+    it("should NOT include surcharge when ACH PM", async () => {
+      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-upd-ach",
+      );
+
+      // Should create 2 line items: employees only
+      expect(repo.createLineItems).toHaveBeenCalledWith(
+        expect.not.arrayContaining([
+          expect.objectContaining({ type: "surcharge" }),
+        ]),
+        txMock2,
+      );
+      expect(repo.update).toHaveBeenCalledWith(
+        "inv-open-1",
+        expect.objectContaining({ totalAmountCents: 500000 }),
+        txMock2,
+      );
     });
   });
 });
