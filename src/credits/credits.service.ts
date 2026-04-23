@@ -42,19 +42,21 @@ export class CreditsService {
       throw new CustomerNotFoundException(dto.customerId);
     }
 
-    // Validate invoice exists
-    const invoice = await this.invoicesRepository.findById(dto.invoiceId);
+    // Validate invoice exists (only if invoiceId provided)
+    if (dto.invoiceId) {
+      const invoice = await this.invoicesRepository.findById(dto.invoiceId);
 
-    if (!invoice || invoice.customerId !== dto.customerId) {
-      throw new InvoiceNotFoundException(dto.invoiceId);
-    }
+      if (!invoice || invoice.customerId !== dto.customerId) {
+        throw new InvoiceNotFoundException(dto.invoiceId);
+      }
 
-    // Validate credit amount does not exceed invoice total
-    if (dto.amountCents > invoice.totalAmountCents) {
-      throw new CreditExceedsInvoiceException(
-        dto.amountCents,
-        invoice.totalAmountCents,
-      );
+      // Validate credit amount does not exceed invoice total
+      if (dto.amountCents > invoice.totalAmountCents) {
+        throw new CreditExceedsInvoiceException(
+          dto.amountCents,
+          invoice.totalAmountCents,
+        );
+      }
     }
 
     const creditNoteId = generateId();
@@ -67,7 +69,7 @@ export class CreditsService {
         {
           id: creditNoteId,
           customerId: dto.customerId,
-          invoiceId: dto.invoiceId,
+          invoiceId: dto.invoiceId ?? null,
           amountCents: dto.amountCents,
           currency: "usd",
           reason: dto.reason,
@@ -113,7 +115,7 @@ export class CreditsService {
     return {
       id: creditNoteId,
       customerId: dto.customerId,
-      invoiceId: dto.invoiceId,
+      invoiceId: dto.invoiceId ?? null,
       amountCents: dto.amountCents,
       currency: "usd",
       reason: dto.reason,

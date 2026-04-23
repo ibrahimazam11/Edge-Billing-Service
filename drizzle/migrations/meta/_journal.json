@@ -183,6 +183,13 @@
       "when": 1775868876221,
       "tag": "0025_eminent_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776886529306,
+      "tag": "0026_make-credit-notes-invoice-id-nullable",
+      "breakpoints": true
     }
   ]
 }

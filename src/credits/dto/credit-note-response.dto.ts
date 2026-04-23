@@ -1,7 +1,7 @@
 export class CreditNoteResponseDto {
   id!: string;
   customerId!: string;
-  invoiceId!: string;
+  invoiceId!: string | null;
   amountCents!: number;
   currency!: string;
   reason!: string;

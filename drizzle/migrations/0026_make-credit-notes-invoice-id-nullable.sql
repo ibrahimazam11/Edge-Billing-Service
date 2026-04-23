@@ -1,0 +1,1 @@
+ALTER TABLE "credit_notes" ALTER COLUMN "invoice_id" DROP NOT NULL;

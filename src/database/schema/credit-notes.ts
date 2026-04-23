@@ -17,9 +17,7 @@ export const creditNotes = pgTable(
     customerId: uuid("customer_id")
       .notNull()
       .references(() => customers.id),
-    invoiceId: uuid("invoice_id")
-      .notNull()
-      .references(() => invoices.id),
+    invoiceId: uuid("invoice_id").references(() => invoices.id),
     amountCents: integer("amount_cents").notNull(),
     currency: varchar("currency", { length: 3 }).notNull().default("usd"),
     reason: text("reason").notNull(),

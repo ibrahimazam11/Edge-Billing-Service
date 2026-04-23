@@ -279,6 +279,34 @@ describe("CreditsService", () => {
 
       expect(result.createdBy).toBeNull();
     });
+
+    it("should create credit note without invoiceId (general account credit)", async () => {
+      const dto = { ...MOCK_DTO };
+      delete (dto as any).invoiceId;
+
+      const result = await service.issueCreditNote(dto, "corr-no-inv");
+
+      expect(result.invoiceId).toBeNull();
+      expect(mockInvoicesRepo.findById).not.toHaveBeenCalled();
+      expect(mockCreditNotesRepo.createInTx).toHaveBeenCalledWith(
+        expect.objectContaining({ invoiceId: null }),
+        txMock,
+      );
+      expect(mockCreditBalancesRepo.upsertInTx).toHaveBeenCalled();
+      expect(mockLedgerService.recordCreditNoteIssued).toHaveBeenCalled();
+    });
+
+    it("should skip invoice validation when invoiceId is null", async () => {
+      const dto = {
+        customerId: MOCK_CUSTOMER.id,
+        amountCents: 5000,
+        reason: "Goodwill credit",
+      };
+
+      await service.issueCreditNote(dto, "corr-skip-val");
+
+      expect(mockInvoicesRepo.findById).not.toHaveBeenCalled();
+    });
   });
 
   describe("getCreditBalance", () => {
