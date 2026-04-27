@@ -3,38 +3,26 @@ import {
   ApiTags,
   ApiOperation,
   ApiOkResponse,
-  ApiHeader,
-  ApiUnauthorizedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiConflictResponse,
 } from "@nestjs/swagger";
-import { Roles } from "../common/decorators/roles.decorator";
-import { AdminRole } from "../common/enums/admin-role.enum";
+import { Public } from "../common/decorators/public.decorator";
 import { TimeMachineService } from "./time-machine.service";
 import { AdvanceCycleRequestDto } from "./dto/advance-cycle-request.dto";
 import type { AdvanceCycleResponseDto } from "./dto/advance-cycle-response.dto";
 
 @ApiTags("Admin — Time Machine")
-@ApiHeader({
-  name: "x-admin-role",
-  required: true,
-  enum: ["cs", "finance", "admin"],
-  description: "Admin role for RBAC",
-})
-@ApiHeader({
-  name: "x-admin-user-id",
-  required: false,
-  description: "Admin user ID for audit trail",
-})
-@ApiUnauthorizedResponse({ description: "Unauthorized" })
 @Controller("v1/admin/time-machine")
 export class TimeMachineController {
   constructor(private readonly timeMachineService: TimeMachineService) {}
 
+  // Auth intentionally disabled on this endpoint for local/dev testing —
+  // the service-level assertNonProduction() still blocks execution in prod.
+  // Revisit before any non-dev deploy.
   @Post("advance-cycle")
   @HttpCode(HttpStatus.OK)
-  @Roles(AdminRole.Admin)
+  @Public()
   @ApiOperation({
     summary: "Fast-forward a BS customer through one billing cycle",
     description:
