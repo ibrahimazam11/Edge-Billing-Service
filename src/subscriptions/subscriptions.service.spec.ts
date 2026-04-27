@@ -7,6 +7,7 @@ import { PaymentMethodsService } from "../payment-methods/payment-methods.servic
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { InvoicesService } from "../invoices/invoices.service";
 import { MonolithApiService } from "../integration/monolith-api/monolith-api.service";
+import { PayrollBreakdownResolver } from "../payroll/payroll-breakdown.resolver";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
 import { NoPaymentMethodException } from "../common/exceptions/no-payment-method.exception";
@@ -52,8 +53,11 @@ const mockInvoicesService = {
 const mockMonolithApiService = {
   getPayrollBreakdown: jest.fn().mockResolvedValue({
     employees: [],
-    totalAmountCents: 0,
   }),
+};
+
+const mockPayrollResolver = {
+  resolve: jest.fn().mockReturnValue({ employees: [], totalAmountCents: 0 }),
 };
 
 const mockCustomer = {
@@ -128,6 +132,7 @@ describe("SubscriptionsService", () => {
         { provide: SqsProducerService, useValue: mockSqsProducerService },
         { provide: InvoicesService, useValue: mockInvoicesService },
         { provide: MonolithApiService, useValue: mockMonolithApiService },
+        { provide: PayrollBreakdownResolver, useValue: mockPayrollResolver },
       ],
     }).compile();
 
@@ -793,12 +798,35 @@ describe("SubscriptionsService", () => {
       nextBillingDate: new Date("2026-05-01T00:00:00.000Z"),
     };
 
-    const freshPayrollFromMonolith = {
+    // Monolith now returns RAW shape; the resolver transforms it into the
+    // resolved breakdown. We stub both the HTTP and the resolver.
+    const freshPayrollRawFromMonolith = {
       employees: [
         {
           employeeId: "emp-1",
           employeeName: "Alice",
-          customerCost: 2400, // updated salary bumped the cost
+          salaryCents: 2100,
+          platformFeeCents: 300,
+          discountConfig: null,
+          bonuses: [],
+        },
+        {
+          employeeId: "emp-2",
+          employeeName: "Bob",
+          salaryCents: 2000,
+          platformFeeCents: 300,
+          discountConfig: null,
+          bonuses: [],
+        },
+      ],
+    };
+
+    const resolvedFresh = {
+      employees: [
+        {
+          employeeId: "emp-1",
+          employeeName: "Alice",
+          customerCost: 2400,
           salary: 2100,
           platformFee: 300,
           bonus: 0,
@@ -826,8 +854,9 @@ describe("SubscriptionsService", () => {
       mockSubscriptionsRepo.update.mockResolvedValue(advancedRow);
       mockInvoicesService.createDraftInvoice.mockResolvedValue("new-draft-id");
       mockMonolithApiService.getPayrollBreakdown.mockResolvedValue(
-        freshPayrollFromMonolith,
+        freshPayrollRawFromMonolith,
       );
+      mockPayrollResolver.resolve.mockReturnValue(resolvedFresh);
     });
 
     it("should advance subscription and seed new draft with fresh payroll from monolith", async () => {
@@ -842,13 +871,15 @@ describe("SubscriptionsService", () => {
         }),
       );
 
-      // Fresh payroll was fetched for the advanced cycle
+      // Fresh payroll was fetched (no cycle args; BS resolves cycle locally)
       expect(mockMonolithApiService.getPayrollBreakdown).toHaveBeenCalledWith(
         "mono-123",
-        {
-          start: new Date("2026-04-01T00:00:00.000Z"),
-          end: new Date("2026-05-01T00:00:00.000Z"),
-        },
+      );
+
+      // Resolver was called with the advanced cycle's start
+      expect(mockPayrollResolver.resolve).toHaveBeenCalledWith(
+        { employees: freshPayrollRawFromMonolith.employees },
+        new Date("2026-04-01T00:00:00.000Z"),
       );
 
       // New draft uses monolith's totalAmountCents, not a recomputed sum
@@ -1212,27 +1243,48 @@ describe("SubscriptionsService", () => {
   });
 
   describe("buildEmployeeLineItems (via createFromEvent)", () => {
-    const makeSubscriptionPayload = (
-      employees: Array<{
-        employeeId: string;
-        employeeName: string;
-        customerCost: number;
-        salary: number;
-        platformFee: number;
-        bonus: number;
-        raise: number;
-        discount: number;
-      }>,
-    ) => ({
-      monolithCustomerId: "mono-123",
-      planName: "standard-monthly",
-      amountCents: 10000,
-      currency: "usd",
-      billingInterval: "monthly",
-      billingStartDate: "2026-03-01T00:00:00.000Z",
-      onboardingDate: "2026-02-15T00:00:00.000Z",
-      employees,
-    });
+    type ResolvedEmployee = {
+      employeeId: string;
+      employeeName: string;
+      customerCost: number;
+      salary: number;
+      platformFee: number;
+      bonus: number;
+      raise: number;
+      discount: number;
+    };
+
+    // Pass-through stub: createFromEvent now feeds raw employees into the
+    // resolver. Tests provide the resolved shape directly and the mock
+    // resolver returns it unchanged so assertions remain readable.
+    const makeSubscriptionPayload = (employees: ResolvedEmployee[]) => {
+      const totalAmountCents = employees.reduce(
+        (sum, e) => sum + e.customerCost,
+        0,
+      );
+      mockPayrollResolver.resolve.mockReturnValueOnce({
+        employees,
+        totalAmountCents,
+      });
+      const rawEmployees = employees.map((e) => ({
+        employeeId: e.employeeId,
+        employeeName: e.employeeName,
+        salaryCents: e.salary,
+        platformFeeCents: e.platformFee,
+        discountConfig: null,
+        bonuses: [],
+      }));
+      return {
+        monolithCustomerId: "mono-123",
+        planName: "standard-monthly",
+        amountCents: 10000,
+        currency: "usd",
+        billingInterval: "monthly",
+        billingStartDate: "2026-03-01T00:00:00.000Z",
+        onboardingDate: "2026-02-15T00:00:00.000Z",
+        employees: rawEmployees,
+      };
+    };
 
     beforeEach(() => {
       mockCustomersService.findById.mockResolvedValue(mockCustomer);

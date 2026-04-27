@@ -1,11 +1,10 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, createHmac } from "crypto";
-import type { PayrollEmployeeLineItem } from "../sqs/contracts/inbound-events";
+import type { RawPayrollEmployeePayload } from "../sqs/contracts/inbound-events";
 
 export interface PayrollBreakdownResponse {
-  employees: PayrollEmployeeLineItem[];
-  totalAmountCents: number;
+  employees: RawPayrollEmployeePayload[];
 }
 
 @Injectable()
@@ -23,22 +22,13 @@ export class MonolithApiService {
 
   async getPayrollBreakdown(
     monolithCustomerId: string,
-    cycle?: { start: Date; end: Date },
   ): Promise<PayrollBreakdownResponse> {
     if (!this.baseUrl) {
       throw new Error("MONOLITH_API_BASE_URL not configured");
     }
 
-    // Sign with the bare path (no query string). Monolith's middleware
-    // validates against `req.path`, which excludes the query string.
     const path = `/v1/billing-service/customers/${monolithCustomerId}/payroll-breakdown`;
-    const qs = cycle
-      ? `?${new URLSearchParams({
-          cycleStart: cycle.start.toISOString(),
-          cycleEnd: cycle.end.toISOString(),
-        }).toString()}`
-      : "";
-    const url = `${this.baseUrl}${path}${qs}`;
+    const url = `${this.baseUrl}${path}`;
     const headers = this.sign("GET", path);
 
     const response = await fetch(url, { headers });

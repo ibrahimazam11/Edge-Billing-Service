@@ -33,10 +33,8 @@ import type { ChargeResultDto } from "../charges/dto/charge-result.dto";
 import { InvoicesRepository } from "./invoices.repository";
 import { invoices } from "../database/schema/invoices";
 import { invoiceLineItems } from "../database/schema/invoice-line-items";
-import type {
-  InvoiceCreatePayload,
-  PayrollEmployeeLineItem,
-} from "../integration/sqs/contracts/inbound-events";
+import type { InvoiceCreatePayload } from "../integration/sqs/contracts/inbound-events";
+import type { ResolvedEmployeeLineItem } from "../payroll/payroll-breakdown.resolver";
 import { CustomersService } from "../customers/customers.service";
 import { SurchargeConfigService } from "../surcharges/surcharge-config.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
@@ -1142,7 +1140,7 @@ export class InvoicesService {
 
   async updateOpenInvoiceLineItems(
     customerId: string,
-    employees: PayrollEmployeeLineItem[],
+    employees: ResolvedEmployeeLineItem[],
     totalAmountCents: number,
     correlationId: string,
   ): Promise<void> {

@@ -11,6 +11,10 @@ import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
 import { MonolithApiService } from "../integration/monolith-api/monolith-api.service";
 import { DualWriteService } from "../migration/dual-write.service";
 import { InvoicesService } from "../invoices/invoices.service";
+import {
+  PayrollBreakdownResolver,
+  type ResolvedEmployeeLineItem,
+} from "../payroll/payroll-breakdown.resolver";
 import { SubscriptionsRepository } from "./subscriptions.repository";
 import { subscriptions } from "../database/schema/subscriptions";
 import { generateId } from "../common/utils/uuid.util";
@@ -47,6 +51,7 @@ export class SubscriptionsService {
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
     private readonly monolithApiService: MonolithApiService,
+    private readonly payrollResolver: PayrollBreakdownResolver,
     @Optional()
     private readonly dualWriteService?: DualWriteService,
   ) {}
@@ -125,12 +130,29 @@ export class SubscriptionsService {
     const chargeDay = customer?.chargeDay ?? 15;
     const isPrepaid = customer?.isPrepaid ?? true;
 
-    // Check if paused subscription exists — resume instead of creating new
+    // Pre-compute the cycle anchor so the resolver can run BEFORE we
+    // create/resume the subscription — we need the resolved total for
+    // amountCents on the subscription row.
     const existingSubs =
       await this.subscriptionsRepository.findByCustomerAndStatuses(
         billingCustomerId,
         ["paused"],
       );
+    const cycleAnchorForResolver =
+      existingSubs.length > 0
+        ? new Date(payload.billingStartDate)
+        : this.calculateFirstBillingPeriodStart(onboardingDate, chargeDay);
+
+    const rawEmployees = payload.employees;
+    const resolved = rawEmployees?.length
+      ? this.payrollResolver.resolve(
+          { employees: rawEmployees },
+          cycleAnchorForResolver,
+        )
+      : { employees: [] as ResolvedEmployeeLineItem[], totalAmountCents: 0 };
+    const subscriptionAmountCents = resolved.employees.length
+      ? resolved.totalAmountCents
+      : payload.amountCents;
 
     let subscriptionId: string;
 
@@ -151,7 +173,7 @@ export class SubscriptionsService {
         pausedSub.id,
         {
           status: "active",
-          amountCents: payload.amountCents,
+          amountCents: subscriptionAmountCents,
           billingPeriodStart: newStart,
           billingPeriodEnd: newEnd,
           nextBillingDate,
@@ -168,10 +190,7 @@ export class SubscriptionsService {
       });
     } else {
       // Step 1: Create new subscription
-      const firstBillingPeriodStart = this.calculateFirstBillingPeriodStart(
-        onboardingDate,
-        chargeDay,
-      );
+      const firstBillingPeriodStart = cycleAnchorForResolver;
       const billingPeriodEnd = this.calculateBillingPeriodEnd(
         firstBillingPeriodStart,
       );
@@ -187,7 +206,7 @@ export class SubscriptionsService {
         customerId: billingCustomerId,
         planName: payload.planName,
         status: "active",
-        amountCents: payload.amountCents,
+        amountCents: subscriptionAmountCents,
         currency,
         billingInterval: payload.billingInterval ?? "monthly",
         billingPeriodStart: firstBillingPeriodStart,
@@ -209,8 +228,7 @@ export class SubscriptionsService {
       });
     }
 
-    // Step 2: Create/update monthly invoice from payload employee data
-    // Get current billing period from the subscription (works for both new and resumed)
+    // Step 2: Create/update monthly invoice using the resolver output from Step 1.
     const sub = await this.subscriptionsRepository.findById(subscriptionId);
     const invoiceBillingStart = sub!.billingPeriodStart;
     const invoiceBillingEnd = sub!.billingPeriodEnd;
@@ -220,13 +238,13 @@ export class SubscriptionsService {
       isPrepaid,
     );
 
-    const employees = payload.employees;
-    const monthlyLineItems = employees?.length
-      ? this.buildEmployeeLineItems(employees)
+    const resolvedEmployees = resolved.employees;
+    const monthlyLineItems = resolvedEmployees.length
+      ? this.buildEmployeeLineItems(resolvedEmployees)
       : [];
-    const invoiceTotalCents = employees?.length ? payload.amountCents : 0;
+    const invoiceTotalCents = resolved.totalAmountCents;
 
-    if (!employees?.length) {
+    if (!rawEmployees?.length) {
       this.logger.warn({
         message:
           "subscription.create received without employee data — creating empty draft (payroll.calculated will populate)",
@@ -245,7 +263,7 @@ export class SubscriptionsService {
     ) {
       await this.invoicesService.updateOpenInvoiceLineItems(
         billingCustomerId,
-        employees || [],
+        resolvedEmployees,
         invoiceTotalCents,
         correlationId,
       );
@@ -276,7 +294,7 @@ export class SubscriptionsService {
       message: "First monthly invoice created",
       subscriptionId,
       customerId: billingCustomerId,
-      employeeCount: employees?.length ?? 0,
+      employeeCount: resolvedEmployees.length,
       totalAmountCents: invoiceTotalCents,
       dueDate: invoiceDueDate.toISOString(),
       correlationId,
@@ -284,21 +302,10 @@ export class SubscriptionsService {
   }
 
   /**
-   * Converts payroll employee data into invoice line items with breakdown columns.
-   * One line item per employee — amountCents = customerCost, breakdown in separate fields.
+   * Shapes resolved employee breakdowns into invoice line items with breakdown JSONB.
+   * One line item per employee — amountCents = customerCost.
    */
-  private buildEmployeeLineItems(
-    employees: Array<{
-      employeeId: string;
-      employeeName: string;
-      customerCost: number;
-      salary: number;
-      platformFee: number;
-      bonus: number;
-      raise: number;
-      discount: number;
-    }>,
-  ) {
+  private buildEmployeeLineItems(employees: ResolvedEmployeeLineItem[]) {
     return employees.map((emp) => ({
       type: "employee_cost",
       description: emp.employeeName,
@@ -634,16 +641,21 @@ export class SubscriptionsService {
     try {
       const fresh = await this.monolithApiService.getPayrollBreakdown(
         customer.monolithCustomerId,
-        { start: newStart, end: newEnd },
       );
-      lineItemsForNewDraft = this.buildEmployeeLineItems(fresh.employees);
-      totalAmountCents = fresh.totalAmountCents;
+      const resolvedFresh = this.payrollResolver.resolve(
+        { employees: fresh.employees },
+        newStart,
+      );
+      lineItemsForNewDraft = this.buildEmployeeLineItems(
+        resolvedFresh.employees,
+      );
+      totalAmountCents = resolvedFresh.totalAmountCents;
 
       this.logger.log({
         message: "Fetched fresh payroll from monolith for seed draft",
         invoiceId,
         subscriptionId: subscription.id,
-        employeeCount: fresh.employees.length,
+        employeeCount: resolvedFresh.employees.length,
         totalAmountCents,
         correlationId,
       });
@@ -809,6 +821,62 @@ export class SubscriptionsService {
     }
 
     return existing.length;
+  }
+
+  /**
+   * Resolves a raw `payroll.calculated` payload through the resolver using
+   * the customer's active subscription's `billingPeriodStart` as the cycle
+   * anchor, then updates pricing and the open invoice's line items.
+   * Returns the resolved totalAmountCents (0 if no active subscription).
+   */
+  async applyPayrollUpdate(
+    customerId: string,
+    rawEmployees: Parameters<
+      PayrollBreakdownResolver["resolve"]
+    >[0]["employees"],
+    correlationId: string,
+  ): Promise<number> {
+    // Only ACTIVE subs have a meaningful current billingPeriodStart. Paused
+    // subs have a frozen anchor and shouldn't accept pricing/draft updates
+    // until they resume.
+    const active = await this.subscriptionsRepository.findByCustomerAndStatuses(
+      customerId,
+      ["active"],
+    );
+    if (active.length === 0) {
+      this.logger.warn({
+        message:
+          "applyPayrollUpdate: no active subscription — skipping resolver + draft update",
+        customerId,
+        correlationId,
+      });
+      return 0;
+    }
+
+    // Use the active subscription's billingPeriodStart as the cycle anchor.
+    // BS owns the cycle — monolith no longer guesses.
+    const cycleAnchor = active[0].billingPeriodStart;
+    const resolved = this.payrollResolver.resolve(
+      { employees: rawEmployees ?? [] },
+      cycleAnchor,
+    );
+
+    await this.updatePricing(
+      customerId,
+      resolved.totalAmountCents,
+      correlationId,
+    );
+
+    if (resolved.employees.length > 0) {
+      await this.invoicesService.updateOpenInvoiceLineItems(
+        customerId,
+        resolved.employees,
+        resolved.totalAmountCents,
+        correlationId,
+      );
+    }
+
+    return resolved.totalAmountCents;
   }
 
   private calculateBillingPeriodEnd(start: Date): Date {
