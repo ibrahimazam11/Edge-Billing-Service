@@ -253,10 +253,11 @@ export class SubscriptionsService {
       });
     }
 
-    // For resumed subscriptions, update existing open invoice instead of creating duplicate
-    // If open invoice belongs to a different (e.g., canceled) subscription, void it and create fresh
+    // For resumed subscriptions, update existing open recurring draft instead of creating duplicate.
+    // If the open draft belongs to a different (e.g., canceled) subscription, void it and create fresh.
+    // Onboarding/one-time invoices are intentionally never returned here.
     const existingOpenInvoice =
-      await this.invoicesService.findOpenByCustomerId(billingCustomerId);
+      await this.invoicesService.findOpenRecurringDraft(billingCustomerId);
     if (
       existingOpenInvoice &&
       existingOpenInvoice.subscriptionId === subscriptionId

@@ -175,17 +175,47 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       );
   }
 
-  async findOpenByCustomerId(customerId: string): Promise<Invoice | null> {
+  /**
+   * Counts open recurring drafts for a customer, capped at 2. Expected to be
+   * 0 or 1; >=2 signals an upstream invariant break the caller should
+   * ERROR-log. Capped scan keeps this diagnostic cheap even if a corrupted
+   * customer accumulates many stale drafts.
+   */
+  async countOpenRecurringDrafts(customerId: string): Promise<number> {
+    const rows = await this.db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          eq(invoices.status, "draft"),
+          eq(invoices.type, "recurring"),
+        ),
+      )
+      .limit(2);
+    return rows.length;
+  }
+
+  /**
+   * Returns the customer's open *recurring draft* — the only invoice payroll
+   * resolution is allowed to mutate. Filters strictly to `status='draft' AND
+   * type='recurring'`, never returns onboarding, one-time, finalized, paid, or
+   * voided invoices. Ordered `createdAt DESC` so that, in the anomalous case of
+   * multiple drafts, the most recent wins; the caller is expected to log the
+   * anomaly when that happens.
+   */
+  async findOpenRecurringDraft(customerId: string): Promise<Invoice | null> {
     const [row] = await this.db
       .select()
       .from(invoices)
       .where(
         and(
           eq(invoices.customerId, customerId),
-          inArray(invoices.status, ["draft", "finalized"]),
+          eq(invoices.status, "draft"),
+          eq(invoices.type, "recurring"),
         ),
       )
-      .orderBy(invoices.createdAt)
+      .orderBy(desc(invoices.createdAt))
       .limit(1);
     return row ?? null;
   }

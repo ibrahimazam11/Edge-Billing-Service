@@ -42,7 +42,7 @@ const mockSqsProducerService = {
 };
 
 const mockInvoicesService = {
-  findOpenByCustomerId: jest.fn().mockResolvedValue(null),
+  findOpenRecurringDraft: jest.fn().mockResolvedValue(null),
   createDraftInvoice: jest.fn().mockResolvedValue(undefined),
   updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
   voidDraftInvoicesForCustomer: jest.fn().mockResolvedValue(0),
@@ -1291,7 +1291,7 @@ describe("SubscriptionsService", () => {
       mockSubscriptionsRepo.findByCustomerAndStatuses.mockResolvedValue([]);
       mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
       mockSubscriptionsRepo.findById.mockResolvedValue(mockSubscriptionRow);
-      mockInvoicesService.findOpenByCustomerId.mockResolvedValue(null);
+      mockInvoicesService.findOpenRecurringDraft.mockResolvedValue(null);
     });
 
     it("should set description to just employee name (no ' - Monthly Cost' suffix)", async () => {

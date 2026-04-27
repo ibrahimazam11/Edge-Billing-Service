@@ -1288,7 +1288,7 @@ describe("InvoicesService", () => {
       expect(repo.update).not.toHaveBeenCalled();
     });
 
-    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenByCustomerId)", async () => {
+    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenRecurringDraft)", async () => {
       // Simulate: only finalized invoices exist -> findDraftByCustomerId returns null
       (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
         jest.fn().mockResolvedValue(null);
@@ -1299,7 +1299,7 @@ describe("InvoicesService", () => {
       );
 
       expect(count).toBe(0);
-      // Verify it called findDraftByCustomerId (not findOpenByCustomerId)
+      // Verify it called findDraftByCustomerId (not findOpenRecurringDraft)
       expect(
         (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
       ).toHaveBeenCalledWith("cust-123");
@@ -1415,7 +1415,8 @@ describe("InvoicesService - Surcharge", () => {
       updateWithConcurrencyCheck: jest.fn(),
       deleteLineItemsByInvoiceId: jest.fn(),
       deleteLineItemsByInvoiceIdAndType: jest.fn(),
-      findOpenByCustomerId: jest.fn(),
+      findOpenRecurringDraft: jest.fn(),
+      countOpenRecurringDrafts: jest.fn().mockResolvedValue(1),
       findForBillingHistory: jest.fn(),
     } as unknown as jest.Mocked<InvoicesRepository>;
 
@@ -1588,7 +1589,7 @@ describe("InvoicesService - Surcharge", () => {
 
   describe("recalculateSurchargeOnOpenInvoice", () => {
     it("should add surcharge when config changes and card PM is default", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
       ]);
@@ -1622,7 +1623,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should remove surcharge when PM switches to ACH", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
         {
@@ -1657,7 +1658,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should no-op when no open invoice exists", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(null);
+      repo.findOpenRecurringDraft.mockResolvedValue(null);
 
       await service.recalculateSurchargeOnOpenInvoice("cust-123", "corr-noop");
 
@@ -1673,7 +1674,7 @@ describe("InvoicesService - Surcharge", () => {
         type: "surcharge",
         amountCents: 10000,
       };
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
         existingSurcharge as any,
@@ -1729,7 +1730,7 @@ describe("InvoicesService - Surcharge", () => {
     ];
 
     it("should include surcharge line item when card PM + config", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
         type: "card",
       });
@@ -1769,7 +1770,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should NOT include surcharge when ACH PM", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
         type: "bank_account",
       });
@@ -1797,6 +1798,84 @@ describe("InvoicesService - Surcharge", () => {
         expect.objectContaining({ totalAmountCents: 500000 }),
         txMock2,
       );
+    });
+
+    it("no-op + WARN when no open recurring draft exists (e.g., mid-onboarding)", async () => {
+      repo.findOpenRecurringDraft.mockResolvedValue(null);
+      const warnSpy = jest.spyOn(service["logger"], "warn");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-no-draft",
+        employees,
+        500000,
+        "corr-noop",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/no open recurring draft/i),
+          customerId: "cust-no-draft",
+        }),
+      );
+    });
+
+    it("refuses to mutate if repository contract leaks a non-recurring or non-draft invoice", async () => {
+      // Simulate a hypothetical repository regression returning a finalized onboarding invoice.
+      repo.findOpenRecurringDraft.mockResolvedValue({
+        ...mockOpenInvoice,
+        type: "onboarding",
+        status: "finalized",
+      } as any);
+      const errorSpy = jest.spyOn(service["logger"], "error");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-guard",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/not a recurring draft/i),
+          invoiceStatus: "finalized",
+          invoiceType: "onboarding",
+        }),
+      );
+    });
+
+    it("fails closed: logs ERROR and refuses to mutate when more than one open recurring draft exists", async () => {
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
+      repo.countOpenRecurringDrafts.mockResolvedValue(2);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({});
+      const errorSpy = jest.spyOn(service["logger"], "error");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-multi",
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/refusing to mutate/i),
+          draftCount: 2,
+        }),
+      );
+      // No DB writes — operator must resolve duplicates first.
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
     });
   });
 });

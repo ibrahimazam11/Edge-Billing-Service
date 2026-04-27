@@ -1113,8 +1113,8 @@ export class InvoicesService {
     }
   }
 
-  async findOpenByCustomerId(customerId: string) {
-    return this.invoicesRepository.findOpenByCustomerId(customerId);
+  async findOpenRecurringDraft(customerId: string) {
+    return this.invoicesRepository.findOpenRecurringDraft(customerId);
   }
 
   /**
@@ -1144,14 +1144,48 @@ export class InvoicesService {
     totalAmountCents: number,
     correlationId: string,
   ): Promise<void> {
-    // Find the open (draft or finalized) invoice for this customer
+    // Payroll resolution may only mutate the open recurring draft. Onboarding,
+    // one-time, finalized, paid, and voided invoices are immutable from this path.
     const openInvoice =
-      await this.invoicesRepository.findOpenByCustomerId(customerId);
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
 
     if (!openInvoice) {
       this.logger.warn({
-        message: "No open invoice found for line item update",
+        message: "No open recurring draft found for line item update; no-op",
         customerId,
+        correlationId,
+      });
+      return;
+    }
+
+    // Defense in depth: if the repository contract is ever loosened, refuse to
+    // mutate anything that isn't a recurring draft.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to update line items: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
+
+    // Surface upstream invariant break: more than one open recurring draft.
+    // Fail closed — mutating only one of N leaves the others stale and a later
+    // finalize-by-oldest path could charge an outdated total. Operator must
+    // resolve the anomaly (void duplicates) before payroll updates resume.
+    const draftCount =
+      await this.invoicesRepository.countOpenRecurringDrafts(customerId);
+    if (draftCount > 1) {
+      this.logger.error({
+        message:
+          "Multiple open recurring drafts detected for customer — refusing to mutate; resolve duplicates manually",
+        customerId,
+        candidateInvoiceId: openInvoice.id,
+        draftCount,
         correlationId,
       });
       return;
@@ -1314,9 +1348,27 @@ export class InvoicesService {
     customerId: string,
     correlationId: string,
   ): Promise<void> {
+    // Surcharge only applies to the open recurring draft. Finalized/paid
+    // invoices have already-locked surcharge; onboarding/one-time use a
+    // separate fee model.
     const openInvoice =
-      await this.invoicesRepository.findOpenByCustomerId(customerId);
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
     if (!openInvoice) return;
+
+    // Defense in depth: refuse to mutate anything that isn't a recurring draft,
+    // even if the repository contract is ever loosened.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to recalculate surcharge: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
 
     const items = await this.invoicesRepository.getLineItemsByInvoiceId(
       openInvoice.id,
