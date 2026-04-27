@@ -205,8 +205,7 @@ describe("TimeMachineService", () => {
       expect(result.notes).toHaveLength(0);
     });
 
-    it("flags async ACH when invoice is finalized but period did not advance", async () => {
-      subscriptionsRepository.findById.mockResolvedValue(activeSubscription);
+    it("reports advanceApplied true and no pending note for ACH path (advance now happens at finalization)", async () => {
       invoicesRepository.findDuplicateForSubscription.mockResolvedValue([
         {
           id: invoiceId,
@@ -224,9 +223,9 @@ describe("TimeMachineService", () => {
 
       const result = await service.advanceCycle("ext-123");
 
-      expect(result.afterState.advanceApplied).toBe(false);
+      expect(result.afterState.advanceApplied).toBe(true);
       expect(result.invoice?.paymentStatus).toBe("pending");
-      expect(result.notes.join(" ")).toMatch(/ACH/);
+      expect(result.notes).toHaveLength(0);
     });
 
     it("surfaces creditApplied from invoice metadata", async () => {

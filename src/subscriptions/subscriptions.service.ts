@@ -8,6 +8,7 @@ import {
 import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
+import { MonolithApiService } from "../integration/monolith-api/monolith-api.service";
 import { DualWriteService } from "../migration/dual-write.service";
 import { InvoicesService } from "../invoices/invoices.service";
 import { SubscriptionsRepository } from "./subscriptions.repository";
@@ -45,6 +46,7 @@ export class SubscriptionsService {
     private readonly sqsProducerService: SqsProducerService,
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
+    private readonly monolithApiService: MonolithApiService,
     @Optional()
     private readonly dualWriteService?: DualWriteService,
   ) {}
@@ -496,6 +498,227 @@ export class SubscriptionsService {
     });
 
     return this.toResponseDto(updated);
+  }
+
+  /**
+   * Advances the subscription's billing period and seeds a fresh draft invoice
+   * for the new period. Called from the scheduler (and time-machine) immediately
+   * after a recurring invoice is finalized. Independent of payment outcome.
+   *
+   * Idempotent: if the subscription's billingPeriodStart is already past the
+   * just-finalized invoice's period, treat as replay and skip with a warning.
+   *
+   * Only runs for type=recurring invoices with a subscriptionId. Onboarding and
+   * one-time invoices are no-ops.
+   */
+  async advanceAndSeedNextDraft(
+    invoiceId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const invoice = await this.invoicesService.findById(invoiceId);
+    if (!invoice) {
+      this.logger.warn({
+        message: "Invoice not found during advance+seed",
+        invoiceId,
+        correlationId,
+      });
+      return;
+    }
+
+    if (invoice.type !== "recurring" || !invoice.subscriptionId) {
+      this.logger.debug({
+        message: "Skipping advance+seed: not a recurring subscription invoice",
+        invoiceId,
+        type: invoice.type,
+        subscriptionId: invoice.subscriptionId,
+        correlationId,
+      });
+      return;
+    }
+
+    const subscription = await this.subscriptionsRepository.findById(
+      invoice.subscriptionId,
+    );
+    if (!subscription) {
+      this.logger.error({
+        message: "Subscription not found during advance+seed",
+        invoiceId,
+        subscriptionId: invoice.subscriptionId,
+        correlationId,
+      });
+      return;
+    }
+
+    const invoicePeriodStart = new Date(invoice.billingPeriodStart);
+    if (
+      subscription.billingPeriodStart.getTime() > invoicePeriodStart.getTime()
+    ) {
+      this.logger.warn({
+        message:
+          "Subscription already advanced past this invoice's period — skipping advance+seed (replay)",
+        invoiceId,
+        subscriptionId: subscription.id,
+        subscriptionBillingPeriodStart:
+          subscription.billingPeriodStart.toISOString(),
+        invoiceBillingPeriodStart: invoicePeriodStart.toISOString(),
+        correlationId,
+      });
+      return;
+    }
+
+    const customer = await this.customersService.findById(
+      subscription.customerId,
+    );
+    if (!customer) {
+      this.logger.error({
+        message: "Customer not found during advance+seed",
+        invoiceId,
+        customerId: subscription.customerId,
+        correlationId,
+      });
+      return;
+    }
+
+    const advanced = await this.advanceBillingPeriod(
+      subscription.id,
+      correlationId,
+    );
+
+    const newStart = new Date(advanced.billingPeriodStart);
+    const newEnd = new Date(advanced.billingPeriodEnd);
+
+    const draftAlreadySeeded =
+      await this.invoicesService.draftExistsForSubscriptionPeriod(
+        subscription.id,
+        newStart,
+        newEnd,
+      );
+    if (draftAlreadySeeded) {
+      this.logger.warn({
+        message:
+          "Draft for new period already exists — skipping seed to preserve 1-draft-per-subscription invariant",
+        invoiceId,
+        subscriptionId: subscription.id,
+        newBillingPeriodStart: newStart.toISOString(),
+        newBillingPeriodEnd: newEnd.toISOString(),
+        correlationId,
+      });
+      return;
+    }
+
+    const dueDate = calculateInvoiceDueDate(
+      newStart,
+      customer.chargeDay,
+      customer.isPrepaid,
+    );
+
+    // Fetch fresh payroll from monolith for the new cycle. Monolith owns
+    // the authoritative state (current salary, headcount, platformFee
+    // formula, any prorations), so the seed draft starts with correct
+    // numbers rather than a best-guess copy from the closing cycle.
+    //
+    // Fallback: if the API call fails (network, monolith down), preserve
+    // the "always a draft open" invariant by seeding with last cycle's
+    // recurring components (`salary` + `platformFee`) and zeroed one-time
+    // adjustments. Monolith's next `payroll.calculated` event will correct
+    // the stale draft whenever connectivity recovers.
+    let lineItemsForNewDraft: Array<{
+      type: string;
+      description: string;
+      amountCents: number;
+      quantity: number;
+      breakdown: Record<string, number | string> | null;
+    }>;
+    let totalAmountCents: number;
+
+    try {
+      const fresh = await this.monolithApiService.getPayrollBreakdown(
+        customer.monolithCustomerId,
+        { start: newStart, end: newEnd },
+      );
+      lineItemsForNewDraft = this.buildEmployeeLineItems(fresh.employees);
+      totalAmountCents = fresh.totalAmountCents;
+
+      this.logger.log({
+        message: "Fetched fresh payroll from monolith for seed draft",
+        invoiceId,
+        subscriptionId: subscription.id,
+        employeeCount: fresh.employees.length,
+        totalAmountCents,
+        correlationId,
+      });
+    } catch (fetchError) {
+      this.logger.warn({
+        message:
+          "Monolith payroll fetch failed — falling back to stale copy (one-time adjustments stripped)",
+        invoiceId,
+        subscriptionId: subscription.id,
+        error:
+          fetchError instanceof Error ? fetchError.message : String(fetchError),
+        correlationId,
+      });
+
+      lineItemsForNewDraft = invoice.lineItems
+        .filter((li) => li.type !== "surcharge")
+        .map((li) => {
+          if (li.type === "employee_cost" && li.breakdown) {
+            const b = li.breakdown as Record<string, number | string>;
+            const salary = typeof b.salary === "number" ? b.salary : 0;
+            const platformFee =
+              typeof b.platformFee === "number" ? b.platformFee : 0;
+            return {
+              type: li.type,
+              description: li.description,
+              amountCents: salary + platformFee,
+              quantity: li.quantity,
+              breakdown: {
+                employeeId: b.employeeId,
+                salary,
+                platformFee,
+                bonus: 0,
+                raise: 0,
+                discount: 0,
+              },
+            };
+          }
+          return {
+            type: li.type,
+            description: li.description,
+            amountCents: li.amountCents,
+            quantity: li.quantity,
+            breakdown: li.breakdown ?? null,
+          };
+        });
+      totalAmountCents = lineItemsForNewDraft.reduce(
+        (sum, li) => sum + li.amountCents * li.quantity,
+        0,
+      );
+    }
+
+    const newDraftId = await this.invoicesService.createDraftInvoice(
+      {
+        customerId: subscription.customerId,
+        subscriptionId: subscription.id,
+        type: "recurring",
+        lineItems: lineItemsForNewDraft,
+        totalAmountCents,
+        currency: invoice.currency,
+        billingPeriodStart: newStart,
+        billingPeriodEnd: newEnd,
+        dueDate,
+      },
+      correlationId,
+    );
+
+    this.logger.log({
+      message: "Subscription advanced and next draft seeded",
+      invoiceId,
+      subscriptionId: subscription.id,
+      newDraftInvoiceId: newDraftId,
+      newBillingPeriodStart: newStart.toISOString(),
+      newBillingPeriodEnd: newEnd.toISOString(),
+      correlationId,
+    });
   }
 
   async advanceBillingPeriod(

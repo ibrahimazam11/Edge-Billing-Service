@@ -325,26 +325,6 @@ export class WebhookProcessingService {
         correlationId,
       });
 
-      // Advance subscription billing period (outside transaction)
-      if (this.subscriptionsService && invoice.subscriptionId) {
-        try {
-          await this.subscriptionsService.advanceBillingPeriod(
-            invoice.subscriptionId,
-            correlationId,
-          );
-        } catch (advanceError) {
-          this.logger.warn({
-            message: "Failed to advance billing period after webhook payment",
-            subscriptionId: invoice.subscriptionId,
-            error:
-              advanceError instanceof Error
-                ? advanceError.message
-                : String(advanceError),
-            correlationId,
-          });
-        }
-      }
-
       // Resolve monolithCustomerId for outbound events
       const customerRecord = await this.customersRepository.findById(
         invoice.customerId,

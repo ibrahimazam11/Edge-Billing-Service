@@ -159,11 +159,6 @@ export class TimeMachineService {
         "No invoice was produced. Either an invoice for this period already existed (duplicate) or the subscription was filtered out by findDueForBilling. Check BS logs with correlationId for details.",
       );
     }
-    if (cycleInvoice && !advanceApplied) {
-      notes.push(
-        "Invoice generated but billing period not advanced. Likely async payment (ACH returned 'processing'); advance will apply when Stripe's payment_intent.succeeded webhook fires (~4-5 business days).",
-      );
-    }
 
     return {
       simulationId,

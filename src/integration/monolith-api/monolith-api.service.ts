@@ -23,13 +23,22 @@ export class MonolithApiService {
 
   async getPayrollBreakdown(
     monolithCustomerId: string,
+    cycle?: { start: Date; end: Date },
   ): Promise<PayrollBreakdownResponse> {
     if (!this.baseUrl) {
       throw new Error("MONOLITH_API_BASE_URL not configured");
     }
 
+    // Sign with the bare path (no query string). Monolith's middleware
+    // validates against `req.path`, which excludes the query string.
     const path = `/v1/billing-service/customers/${monolithCustomerId}/payroll-breakdown`;
-    const url = `${this.baseUrl}${path}`;
+    const qs = cycle
+      ? `?${new URLSearchParams({
+          cycleStart: cycle.start.toISOString(),
+          cycleEnd: cycle.end.toISOString(),
+        }).toString()}`
+      : "";
+    const url = `${this.baseUrl}${path}${qs}`;
     const headers = this.sign("GET", path);
 
     const response = await fetch(url, { headers });

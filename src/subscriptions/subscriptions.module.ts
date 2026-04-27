@@ -2,6 +2,7 @@ import { Module, forwardRef } from "@nestjs/common";
 import { CustomersModule } from "../customers/customers.module";
 import { PaymentMethodsModule } from "../payment-methods/payment-methods.module";
 import { SqsIntegrationModule } from "../integration/sqs/sqs.module";
+import { MonolithApiModule } from "../integration/monolith-api/monolith-api.module";
 import { DualWriteModule } from "../migration/dual-write.module";
 import { InvoicesModule } from "../invoices/invoices.module";
 import { SubscriptionsRepository } from "./subscriptions.repository";
@@ -15,6 +16,7 @@ import { SubscriptionsController } from "./subscriptions.controller";
     DualWriteModule,
     forwardRef(() => InvoicesModule),
     forwardRef(() => SqsIntegrationModule),
+    MonolithApiModule,
   ],
   controllers: [SubscriptionsController],
   providers: [SubscriptionsRepository, SubscriptionsService],

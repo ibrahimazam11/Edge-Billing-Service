@@ -394,12 +394,12 @@ describe("ChargesService", () => {
       );
     });
 
-    it("should advance subscription billing period on success", async () => {
+    it("should NOT advance subscription billing period on success (advance moved to finalization path)", async () => {
       await service.executePaymentForInvoice("inv-uuid-1", "corr-1");
 
       expect(
         mockSubscriptionsService.advanceBillingPeriod,
-      ).toHaveBeenCalledWith("sub-uuid-1", "corr-1");
+      ).not.toHaveBeenCalled();
     });
 
     it("should publish payment.succeeded and invoice.paid events", async () => {
@@ -596,20 +596,6 @@ describe("ChargesService", () => {
       expect(result.status).toBe("succeeded");
       expect(result.stripePaymentIntentId).toBe("pi_existing");
       expect(mockGateway.createCharge).not.toHaveBeenCalled();
-    });
-
-    it("should not fail when advanceBillingPeriod throws", async () => {
-      mockSubscriptionsService.advanceBillingPeriod.mockRejectedValue(
-        new Error("Subscription not found"),
-      );
-
-      const result = await service.executePaymentForInvoice(
-        "inv-uuid-1",
-        "corr-1",
-      );
-
-      // Payment still succeeds
-      expect(result.status).toBe("succeeded");
     });
 
     it("should not advance billing period when invoice has no subscriptionId", async () => {
