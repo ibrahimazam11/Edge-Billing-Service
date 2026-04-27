@@ -1,11 +1,10 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, createHmac } from "crypto";
-import type { PayrollEmployeeLineItem } from "../sqs/contracts/inbound-events";
+import type { RawPayrollEmployeePayload } from "../sqs/contracts/inbound-events";
 
 export interface PayrollBreakdownResponse {
-  employees: PayrollEmployeeLineItem[];
-  totalAmountCents: number;
+  employees: RawPayrollEmployeePayload[];
 }
 
 @Injectable()

@@ -256,10 +256,11 @@ describe("InvoicesService", () => {
       );
     });
 
-    it("should skip subscription already invoiced for current billing period", async () => {
+    it("should skip subscription when a finalized invoice already exists for the period", async () => {
       mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
         mockSubscription,
       ]);
+      // mockInvoiceRow.status === "finalized" → real duplicate, skip
       repo.findDuplicateForSubscription.mockResolvedValueOnce([mockInvoiceRow]);
 
       const result = await service.generateInvoicesForDueSubscriptions(
@@ -270,6 +271,83 @@ describe("InvoicesService", () => {
       expect(result.created).toBe(0);
       expect(result.skipped).toBe(1);
       expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it("should skip subscription when a paid invoice already exists for the period", async () => {
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        mockSubscription,
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([
+        { ...mockInvoiceRow, status: "paid" },
+      ]);
+
+      const result = await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-123",
+      );
+
+      expect(result.created).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it("should finalize a pre-existing recurring draft in place rather than creating a new invoice", async () => {
+      const draft = {
+        ...mockInvoiceRow,
+        id: "draft-inv-1",
+        status: "draft",
+        totalAmountCents: 7500,
+      };
+
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        mockSubscription,
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([draft]);
+      repo.update.mockResolvedValue({ ...draft, status: "finalized" });
+
+      const result = await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-123",
+      );
+
+      // Counted as created (cycle was billed), not skipped
+      expect(result.created).toBe(1);
+      expect(result.skipped).toBe(0);
+
+      // The existing draft id was finalized — no new invoice row was created
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledWith(
+        "draft-inv-1",
+        expect.objectContaining({ status: "finalized" }),
+        expect.anything(),
+      );
+      // Ledger entry recorded against the pre-existing draft
+      expect(mockLedgerService.recordInvoiceFinalized).toHaveBeenCalledWith(
+        "draft-inv-1",
+        7500,
+        "usd",
+        "corr-123",
+        expect.anything(),
+      );
+    });
+
+    it("should skip with warning when only a voided invoice exists for the period (unexpected state)", async () => {
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        mockSubscription,
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([
+        { ...mockInvoiceRow, id: "void-inv", status: "void" },
+      ]);
+
+      const result = await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-123",
+      );
+
+      expect(result.skipped).toBe(1);
+      expect(result.created).toBe(0);
+      // No new invoice is created — voided state is an explicit "don't bill" signal
+      expect(repo.create).not.toHaveBeenCalled();
     });
 
     it("should not create invoices when no subscriptions are due", async () => {
@@ -381,6 +459,146 @@ describe("InvoicesService", () => {
         "onb-inv-456",
         "corr-123",
       );
+    });
+
+    it("should call advanceAndSeedNextDraft for each finalized recurring invoice regardless of charge outcome", async () => {
+      const mockChargesService = {
+        executePaymentForInvoice: jest.fn(),
+      };
+      const mockSubscriptionsAdvanceService = {
+        advanceAndSeedNextDraft: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const { CHARGES_SERVICE, SUBSCRIPTIONS_SERVICE_FOR_INVOICES } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./invoices.service") as {
+          CHARGES_SERVICE: symbol;
+          SUBSCRIPTIONS_SERVICE_FOR_INVOICES: symbol;
+        };
+
+      const module = await Test.createTestingModule({
+        providers: [
+          InvoicesService,
+          { provide: InvoicesRepository, useValue: repo },
+          { provide: SubscriptionsRepository, useValue: mockSubscriptionsRepo },
+          { provide: DRIZZLE_PROVIDER, useValue: mockDb },
+          { provide: LedgerService, useValue: mockLedgerService },
+          { provide: SqsProducerService, useValue: mockSqsProducerService },
+          { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          {
+            provide: SUBSCRIPTIONS_SERVICE_FOR_INVOICES,
+            useValue: mockSubscriptionsAdvanceService,
+          },
+          { provide: CustomersService, useValue: mockCustomersService },
+        ],
+      }).compile();
+
+      const svc = module.get<InvoicesService>(InvoicesService);
+
+      // Case 1: charge succeeds
+      mockChargesService.executePaymentForInvoice.mockResolvedValueOnce({
+        chargeId: "c1",
+        status: "succeeded",
+        stripePaymentIntentId: "pi1",
+      });
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        mockSubscription,
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([]);
+      repo.create.mockResolvedValueOnce({ ...mockInvoiceRow, id: "inv-a" });
+      repo.update.mockResolvedValue({ ...mockInvoiceRow, id: "inv-a" });
+
+      await svc.generateInvoicesForDueSubscriptions("2026-03-01", "corr-1");
+
+      // Case 2: charge pending (ACH)
+      mockChargesService.executePaymentForInvoice.mockResolvedValueOnce({
+        chargeId: "c2",
+        status: "pending",
+        stripePaymentIntentId: "pi2",
+      });
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        { ...mockSubscription, id: "sub-b" },
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([]);
+      repo.create.mockResolvedValueOnce({ ...mockInvoiceRow, id: "inv-b" });
+      repo.update.mockResolvedValue({ ...mockInvoiceRow, id: "inv-b" });
+
+      await svc.generateInvoicesForDueSubscriptions("2026-03-01", "corr-2");
+
+      // Case 3: charge fails (throws)
+      mockChargesService.executePaymentForInvoice.mockRejectedValueOnce(
+        new Error("Card declined"),
+      );
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        { ...mockSubscription, id: "sub-c" },
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([]);
+      repo.create.mockResolvedValueOnce({ ...mockInvoiceRow, id: "inv-c" });
+      repo.update.mockResolvedValue({ ...mockInvoiceRow, id: "inv-c" });
+
+      await svc.generateInvoicesForDueSubscriptions("2026-03-01", "corr-3");
+
+      // advanceAndSeedNextDraft fires for all three outcomes
+      expect(
+        mockSubscriptionsAdvanceService.advanceAndSeedNextDraft,
+      ).toHaveBeenCalledTimes(3);
+    });
+
+    it("should swallow advanceAndSeedNextDraft errors so the scheduler batch is not broken", async () => {
+      const mockChargesService = {
+        executePaymentForInvoice: jest.fn().mockResolvedValue({
+          chargeId: "c1",
+          status: "succeeded",
+          stripePaymentIntentId: "pi1",
+        }),
+      };
+      const mockSubscriptionsAdvanceService = {
+        advanceAndSeedNextDraft: jest.fn().mockRejectedValue(new Error("boom")),
+      };
+
+      const { CHARGES_SERVICE, SUBSCRIPTIONS_SERVICE_FOR_INVOICES } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./invoices.service") as {
+          CHARGES_SERVICE: symbol;
+          SUBSCRIPTIONS_SERVICE_FOR_INVOICES: symbol;
+        };
+
+      const module = await Test.createTestingModule({
+        providers: [
+          InvoicesService,
+          { provide: InvoicesRepository, useValue: repo },
+          { provide: SubscriptionsRepository, useValue: mockSubscriptionsRepo },
+          { provide: DRIZZLE_PROVIDER, useValue: mockDb },
+          { provide: LedgerService, useValue: mockLedgerService },
+          { provide: SqsProducerService, useValue: mockSqsProducerService },
+          { provide: CHARGES_SERVICE, useValue: mockChargesService },
+          {
+            provide: SUBSCRIPTIONS_SERVICE_FOR_INVOICES,
+            useValue: mockSubscriptionsAdvanceService,
+          },
+          { provide: CustomersService, useValue: mockCustomersService },
+        ],
+      }).compile();
+
+      const svc = module.get<InvoicesService>(InvoicesService);
+
+      mockSubscriptionsRepo.findDueForBilling.mockResolvedValueOnce([
+        mockSubscription,
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([]);
+      repo.create.mockResolvedValueOnce(mockInvoiceRow);
+      repo.update.mockResolvedValue(mockInvoiceRow);
+
+      const result = await svc.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-1",
+      );
+
+      // Invoice was still counted as created despite advance failing
+      expect(result.created).toBe(1);
+      expect(
+        mockSubscriptionsAdvanceService.advanceAndSeedNextDraft,
+      ).toHaveBeenCalled();
     });
 
     it("should handle both subscription invoices and onboarding invoices in same run", async () => {
@@ -1070,7 +1288,7 @@ describe("InvoicesService", () => {
       expect(repo.update).not.toHaveBeenCalled();
     });
 
-    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenByCustomerId)", async () => {
+    it("should NOT void finalized invoices (uses findDraftByCustomerId, not findOpenRecurringDraft)", async () => {
       // Simulate: only finalized invoices exist -> findDraftByCustomerId returns null
       (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId =
         jest.fn().mockResolvedValue(null);
@@ -1081,7 +1299,7 @@ describe("InvoicesService", () => {
       );
 
       expect(count).toBe(0);
-      // Verify it called findDraftByCustomerId (not findOpenByCustomerId)
+      // Verify it called findDraftByCustomerId (not findOpenRecurringDraft)
       expect(
         (repo as unknown as Record<string, jest.Mock>).findDraftByCustomerId,
       ).toHaveBeenCalledWith("cust-123");
@@ -1197,7 +1415,8 @@ describe("InvoicesService - Surcharge", () => {
       updateWithConcurrencyCheck: jest.fn(),
       deleteLineItemsByInvoiceId: jest.fn(),
       deleteLineItemsByInvoiceIdAndType: jest.fn(),
-      findOpenByCustomerId: jest.fn(),
+      findOpenRecurringDraft: jest.fn(),
+      countOpenRecurringDrafts: jest.fn().mockResolvedValue(1),
       findForBillingHistory: jest.fn(),
     } as unknown as jest.Mocked<InvoicesRepository>;
 
@@ -1370,7 +1589,7 @@ describe("InvoicesService - Surcharge", () => {
 
   describe("recalculateSurchargeOnOpenInvoice", () => {
     it("should add surcharge when config changes and card PM is default", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
       ]);
@@ -1404,7 +1623,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should remove surcharge when PM switches to ACH", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
         {
@@ -1439,7 +1658,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should no-op when no open invoice exists", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(null);
+      repo.findOpenRecurringDraft.mockResolvedValue(null);
 
       await service.recalculateSurchargeOnOpenInvoice("cust-123", "corr-noop");
 
@@ -1455,7 +1674,7 @@ describe("InvoicesService - Surcharge", () => {
         type: "surcharge",
         amountCents: 10000,
       };
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       repo.getLineItemsByInvoiceId.mockResolvedValue([
         mockEmployeeLineItem as any,
         existingSurcharge as any,
@@ -1511,7 +1730,7 @@ describe("InvoicesService - Surcharge", () => {
     ];
 
     it("should include surcharge line item when card PM + config", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
         type: "card",
       });
@@ -1551,7 +1770,7 @@ describe("InvoicesService - Surcharge", () => {
     });
 
     it("should NOT include surcharge when ACH PM", async () => {
-      repo.findOpenByCustomerId.mockResolvedValue(mockOpenInvoice as any);
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
       mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
         type: "bank_account",
       });
@@ -1579,6 +1798,84 @@ describe("InvoicesService - Surcharge", () => {
         expect.objectContaining({ totalAmountCents: 500000 }),
         txMock2,
       );
+    });
+
+    it("no-op + WARN when no open recurring draft exists (e.g., mid-onboarding)", async () => {
+      repo.findOpenRecurringDraft.mockResolvedValue(null);
+      const warnSpy = jest.spyOn(service["logger"], "warn");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-no-draft",
+        employees,
+        500000,
+        "corr-noop",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/no open recurring draft/i),
+          customerId: "cust-no-draft",
+        }),
+      );
+    });
+
+    it("refuses to mutate if repository contract leaks a non-recurring or non-draft invoice", async () => {
+      // Simulate a hypothetical repository regression returning a finalized onboarding invoice.
+      repo.findOpenRecurringDraft.mockResolvedValue({
+        ...mockOpenInvoice,
+        type: "onboarding",
+        status: "finalized",
+      } as any);
+      const errorSpy = jest.spyOn(service["logger"], "error");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-guard",
+      );
+
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/not a recurring draft/i),
+          invoiceStatus: "finalized",
+          invoiceType: "onboarding",
+        }),
+      );
+    });
+
+    it("fails closed: logs ERROR and refuses to mutate when more than one open recurring draft exists", async () => {
+      repo.findOpenRecurringDraft.mockResolvedValue(mockOpenInvoice as any);
+      repo.countOpenRecurringDrafts.mockResolvedValue(2);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeConfig.getConfig.mockResolvedValue({});
+      const errorSpy = jest.spyOn(service["logger"], "error");
+
+      await service.updateOpenInvoiceLineItems(
+        "cust-123",
+        employees,
+        500000,
+        "corr-multi",
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/refusing to mutate/i),
+          draftCount: 2,
+        }),
+      );
+      // No DB writes — operator must resolve duplicates first.
+      expect(repo.deleteLineItemsByInvoiceId).not.toHaveBeenCalled();
+      expect(repo.createLineItems).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
     });
   });
 });

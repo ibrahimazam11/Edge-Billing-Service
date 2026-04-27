@@ -214,26 +214,6 @@ export class ChargesService {
           correlationId,
         });
 
-        // Advance subscription billing period (outside transaction)
-        if (this.subscriptionsService && invoice.subscriptionId) {
-          try {
-            await this.subscriptionsService.advanceBillingPeriod(
-              invoice.subscriptionId,
-              correlationId,
-            );
-          } catch (advanceError) {
-            this.logger.warn({
-              message: "Failed to advance billing period",
-              subscriptionId: invoice.subscriptionId,
-              error:
-                advanceError instanceof Error
-                  ? advanceError.message
-                  : String(advanceError),
-              correlationId,
-            });
-          }
-        }
-
         // Publish events (outside transaction)
         const dualWriteMetadata =
           await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);

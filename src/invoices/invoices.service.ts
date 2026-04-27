@@ -33,10 +33,8 @@ import type { ChargeResultDto } from "../charges/dto/charge-result.dto";
 import { InvoicesRepository } from "./invoices.repository";
 import { invoices } from "../database/schema/invoices";
 import { invoiceLineItems } from "../database/schema/invoice-line-items";
-import type {
-  InvoiceCreatePayload,
-  PayrollEmployeeLineItem,
-} from "../integration/sqs/contracts/inbound-events";
+import type { InvoiceCreatePayload } from "../integration/sqs/contracts/inbound-events";
+import type { ResolvedEmployeeLineItem } from "../payroll/payroll-breakdown.resolver";
 import { CustomersService } from "../customers/customers.service";
 import { SurchargeConfigService } from "../surcharges/surcharge-config.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
@@ -44,6 +42,9 @@ import { PAYMENT_METHOD_TYPE_CARD } from "../common/constants/payment-method-typ
 import { calculateInvoiceDueDate } from "../common/utils/billing-date.util";
 
 export const CHARGES_SERVICE = Symbol("CHARGES_SERVICE");
+export const SUBSCRIPTIONS_SERVICE_FOR_INVOICES = Symbol(
+  "SUBSCRIPTIONS_SERVICE_FOR_INVOICES",
+);
 
 export interface GenerationResult {
   created: number;
@@ -72,6 +73,14 @@ export class InvoicesService {
         correlationId: string,
         attemptNumber?: number,
       ) => Promise<ChargeResultDto>;
+    },
+    @Optional()
+    @Inject(SUBSCRIPTIONS_SERVICE_FOR_INVOICES)
+    private readonly subscriptionsAdvanceService?: {
+      advanceAndSeedNextDraft: (
+        invoiceId: string,
+        correlationId: string,
+      ) => Promise<void>;
     },
     @Optional()
     private readonly dualWriteService?: DualWriteService,
@@ -105,25 +114,62 @@ export class InvoicesService {
 
     for (const subscription of dueSubscriptions) {
       try {
-        const existingInvoice =
+        const existingInvoices =
           await this.invoicesRepository.findDuplicateForSubscription(
             subscription.id,
             subscription.billingPeriodStart,
             subscription.billingPeriodEnd,
           );
 
-        if (existingInvoice.length > 0) {
+        const existingDraft = existingInvoices.find(
+          (inv) => inv.status === "draft" && inv.type === "recurring",
+        );
+        const existingBilled = existingInvoices.find(
+          (inv) => inv.status === "finalized" || inv.status === "paid",
+        );
+        const existingVoid = existingInvoices.find(
+          (inv) => inv.status === "void",
+        );
+
+        if (existingBilled) {
           skipped++;
           this.logger.log({
             message: "Skipping already-invoiced subscription",
             subscriptionId: subscription.id,
+            existingInvoiceId: existingBilled.id,
+            existingStatus: existingBilled.status,
             correlationId,
           });
           continue;
         }
 
-        const { invoice, creditResult } =
-          await this.createInvoiceForSubscription(subscription, correlationId);
+        // A voided invoice for this exact period is an explicit "don't bill"
+        // signal (drafts are voided on pause/cancel). Respect it — do not
+        // silently create a replacement. This state is unreachable in normal
+        // flow (pause/cancel nulls nextBillingDate, resume starts a new
+        // period); reaching it indicates a bug or manual intervention worth
+        // investigating.
+        if (existingVoid && !existingDraft) {
+          skipped++;
+          this.logger.warn({
+            message:
+              "Skipping subscription: voided invoice exists for current period and no active draft — unexpected state",
+            subscriptionId: subscription.id,
+            voidedInvoiceId: existingVoid.id,
+            correlationId,
+          });
+          continue;
+        }
+
+        const { invoice, creditResult } = existingDraft
+          ? await this.finalizeDraftForSubscription(
+              existingDraft,
+              correlationId,
+            )
+          : await this.createInvoiceForSubscription(
+              subscription,
+              correlationId,
+            );
 
         const invCustomer = await this.customersService.findById(
           invoice.customerId,
@@ -208,6 +254,30 @@ export class InvoicesService {
                 paymentError instanceof Error
                   ? paymentError.message
                   : String(paymentError),
+              correlationId,
+            });
+          }
+        }
+
+        // Advance subscription + seed next-period draft. Runs regardless of
+        // payment outcome — the business requires a standing draft for the
+        // open period so mid-cycle payroll.calculated events have a target.
+        // Failure here must not block the scheduler batch.
+        if (this.subscriptionsAdvanceService) {
+          try {
+            await this.subscriptionsAdvanceService.advanceAndSeedNextDraft(
+              invoice.id,
+              correlationId,
+            );
+          } catch (advanceError) {
+            this.logger.error({
+              message: "Failed to advance subscription and seed next draft",
+              invoiceId: invoice.id,
+              subscriptionId: subscription.id,
+              error:
+                advanceError instanceof Error
+                  ? advanceError.message
+                  : String(advanceError),
               correlationId,
             });
           }
@@ -534,6 +604,103 @@ export class InvoicesService {
     const items = await this.invoicesRepository.getLineItemsByInvoiceId(id);
 
     return this.toResponseDto(updated, items);
+  }
+
+  /**
+   * Finalizes a pre-existing recurring `draft` invoice in place. Used by the
+   * scheduler when a draft already exists for the subscription's current
+   * period — either the one seeded at onboarding via `createFromEvent`, or
+   * the one seeded by `advanceAndSeedNextDraft` at the end of the prior
+   * cycle. Transitions draft → finalized, records the ledger entry, applies
+   * credits. Returns the same `{ invoice, creditResult }` shape as
+   * `createInvoiceForSubscription` so the scheduler's downstream publish +
+   * charge + advance-and-seed logic is origin-agnostic.
+   */
+  private async finalizeDraftForSubscription(
+    draft: typeof invoices.$inferSelect,
+    correlationId: string,
+  ): Promise<{
+    invoice: typeof invoices.$inferSelect;
+    creditResult: CreditApplicationResult;
+  }> {
+    const now = new Date();
+    let creditResult: CreditApplicationResult = {
+      creditApplied: 0,
+      newTotal: draft.totalAmountCents,
+    };
+
+    const result = await this.db.transaction(async (tx) => {
+      validateTransition(
+        draft.status as InvoiceStatus,
+        "finalized" as InvoiceStatus,
+        INVOICE_TRANSITIONS,
+      );
+
+      const finalized = await this.invoicesRepository.update(
+        draft.id,
+        { status: "finalized", updatedAt: now },
+        tx,
+      );
+
+      await this.ledgerService.recordInvoiceFinalized(
+        draft.id,
+        draft.totalAmountCents,
+        draft.currency,
+        correlationId,
+        tx,
+      );
+
+      if (this.creditsService) {
+        creditResult = await this.creditsService.applyCreditsToInvoice(
+          draft.id,
+          draft.customerId,
+          draft.totalAmountCents,
+          draft.currency,
+          correlationId,
+          tx,
+        );
+
+        if (creditResult.newTotal === 0) {
+          validateTransition(
+            "finalized" as InvoiceStatus,
+            "paid" as InvoiceStatus,
+            INVOICE_TRANSITIONS,
+          );
+
+          await this.invoicesRepository.update(
+            draft.id,
+            { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+            tx,
+          );
+        }
+      }
+
+      return finalized ?? draft;
+    });
+
+    this.logger.log({
+      message: "Existing recurring draft finalized in place",
+      invoiceId: draft.id,
+      customerId: draft.customerId,
+      subscriptionId: draft.subscriptionId,
+      totalAmountCents: draft.totalAmountCents,
+      creditApplied: creditResult.creditApplied,
+      finalTotal: creditResult.newTotal,
+      correlationId,
+    });
+
+    const adjustedInvoice =
+      creditResult.creditApplied > 0
+        ? {
+            ...result,
+            totalAmountCents: creditResult.newTotal,
+            ...(creditResult.newTotal === 0
+              ? { status: "paid" as const, paidAt: new Date() }
+              : {}),
+          }
+        : result;
+
+    return { invoice: adjustedInvoice, creditResult };
   }
 
   private async createInvoiceForSubscription(
@@ -946,24 +1113,79 @@ export class InvoicesService {
     }
   }
 
-  async findOpenByCustomerId(customerId: string) {
-    return this.invoicesRepository.findOpenByCustomerId(customerId);
+  async findOpenRecurringDraft(customerId: string) {
+    return this.invoicesRepository.findOpenRecurringDraft(customerId);
+  }
+
+  /**
+   * Returns true when a draft recurring invoice already exists for the given
+   * subscription+period. Used by `advanceAndSeedNextDraft` as a belt-and-
+   * suspenders guard: even if the subscription-period idempotency check
+   * passes, we never seed a second draft for a period that already has one.
+   */
+  async draftExistsForSubscriptionPeriod(
+    subscriptionId: string,
+    periodStart: Date,
+    periodEnd: Date,
+  ): Promise<boolean> {
+    const rows = await this.invoicesRepository.findDuplicateForSubscription(
+      subscriptionId,
+      periodStart,
+      periodEnd,
+    );
+    return rows.some(
+      (inv) => inv.status === "draft" && inv.type === "recurring",
+    );
   }
 
   async updateOpenInvoiceLineItems(
     customerId: string,
-    employees: PayrollEmployeeLineItem[],
+    employees: ResolvedEmployeeLineItem[],
     totalAmountCents: number,
     correlationId: string,
   ): Promise<void> {
-    // Find the open (draft or finalized) invoice for this customer
+    // Payroll resolution may only mutate the open recurring draft. Onboarding,
+    // one-time, finalized, paid, and voided invoices are immutable from this path.
     const openInvoice =
-      await this.invoicesRepository.findOpenByCustomerId(customerId);
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
 
     if (!openInvoice) {
       this.logger.warn({
-        message: "No open invoice found for line item update",
+        message: "No open recurring draft found for line item update; no-op",
         customerId,
+        correlationId,
+      });
+      return;
+    }
+
+    // Defense in depth: if the repository contract is ever loosened, refuse to
+    // mutate anything that isn't a recurring draft.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to update line items: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
+
+    // Surface upstream invariant break: more than one open recurring draft.
+    // Fail closed — mutating only one of N leaves the others stale and a later
+    // finalize-by-oldest path could charge an outdated total. Operator must
+    // resolve the anomaly (void duplicates) before payroll updates resume.
+    const draftCount =
+      await this.invoicesRepository.countOpenRecurringDrafts(customerId);
+    if (draftCount > 1) {
+      this.logger.error({
+        message:
+          "Multiple open recurring drafts detected for customer — refusing to mutate; resolve duplicates manually",
+        customerId,
+        candidateInvoiceId: openInvoice.id,
+        draftCount,
         correlationId,
       });
       return;
@@ -1126,9 +1348,27 @@ export class InvoicesService {
     customerId: string,
     correlationId: string,
   ): Promise<void> {
+    // Surcharge only applies to the open recurring draft. Finalized/paid
+    // invoices have already-locked surcharge; onboarding/one-time use a
+    // separate fee model.
     const openInvoice =
-      await this.invoicesRepository.findOpenByCustomerId(customerId);
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
     if (!openInvoice) return;
+
+    // Defense in depth: refuse to mutate anything that isn't a recurring draft,
+    // even if the repository contract is ever loosened.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to recalculate surcharge: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
 
     const items = await this.invoicesRepository.getLineItemsByInvoiceId(
       openInvoice.id,

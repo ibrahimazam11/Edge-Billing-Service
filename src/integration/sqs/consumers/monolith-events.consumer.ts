@@ -269,28 +269,20 @@ export class MonolithEventsConsumer {
       );
     }
 
-    // Update subscription pricing
-    await this.subscriptionsService.updatePricing(
+    // Resolve the raw payroll state against the active subscription's cycle
+    // anchor (BS owns billing rules now). updatePricing + invoice line item
+    // update both happen inside applyPayrollUpdate.
+    const totalAmountCents = await this.subscriptionsService.applyPayrollUpdate(
       customer.id,
-      payload.totalAmountCents,
+      payload.employees,
       correlationId,
     );
-
-    // Update open invoice line items with latest employee breakdown
-    if (payload.employees?.length && this.invoicesService) {
-      await this.invoicesService.updateOpenInvoiceLineItems(
-        customer.id,
-        payload.employees,
-        payload.totalAmountCents,
-        correlationId,
-      );
-    }
 
     this.logger.log({
       message: "Payroll pricing and invoice line items updated",
       customerId: customer.id,
       employeeCount: payload.employees?.length ?? 0,
-      totalAmountCents: payload.totalAmountCents,
+      totalAmountCents,
       correlationId,
     });
   }

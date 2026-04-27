@@ -14,22 +14,34 @@ export interface CustomerUpdatedPayload {
   metadata?: Record<string, unknown>;
 }
 
-export interface PayrollEmployeeLineItem {
+export interface RawDiscountConfigPayload {
+  isDiscountedEmployee: boolean;
+  flatRateCents: number;
+  percentage: number;
+  startDate: string | null;
+  durationMonths: number | null;
+}
+
+export interface RawPayrollEmployeeBonusPayload {
+  bonusMonth: string;
+  bonusCents: number;
+  incrementAmountCents: number;
+  createdAt: string;
+}
+
+export interface RawPayrollEmployeePayload {
   employeeId: string;
   employeeName: string;
-  customerCost: number;
-  salary: number;
-  platformFee: number;
-  bonus: number;
-  raise: number;
-  discount: number;
+  salaryCents: number;
+  platformFeeCents: number;
+  discountConfig: RawDiscountConfigPayload | null;
+  bonuses: RawPayrollEmployeeBonusPayload[];
 }
 
 export interface PayrollCalculatedPayload {
   monolithCustomerId: string;
   currency: string;
-  totalAmountCents: number;
-  employees: PayrollEmployeeLineItem[];
+  employees: RawPayrollEmployeePayload[];
 }
 
 export interface StripeWebhookReceivedPayload {
@@ -70,8 +82,8 @@ export interface SubscriptionCreatePayload {
   billingInterval: string;
   billingStartDate: string;
   onboardingDate: string;
-  /** Employee line items for first monthly invoice — avoids race with payroll.calculated */
-  employees?: PayrollEmployeeLineItem[];
+  /** Raw employee state for first monthly invoice — avoids race with payroll.calculated */
+  employees?: RawPayrollEmployeePayload[];
 }
 
 export interface SurchargeConfigUpdatedPayload {
