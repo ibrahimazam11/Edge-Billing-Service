@@ -78,13 +78,13 @@ describe("IssueCreditNoteDto", () => {
     expect(errors.some((e) => e.property === "amountCents")).toBe(true);
   });
 
-  it("should reject negative amountCents", async () => {
+  it("should accept negative amountCents (set-balance reduction)", async () => {
     const dto = plainToInstance(IssueCreditNoteDto, {
       ...validData,
       amountCents: -100,
     });
     const errors = await validate(dto);
-    expect(errors.some((e) => e.property === "amountCents")).toBe(true);
+    expect(errors.some((e) => e.property === "amountCents")).toBe(false);
   });
 
   it("should reject empty reason", async () => {
