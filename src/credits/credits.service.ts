@@ -93,14 +93,26 @@ export class CreditsService {
         tx,
       );
 
-      // 3. Record ledger entry (debit credits, credit accounts_receivable)
-      await this.ledgerService.recordCreditNoteIssued(
-        creditNoteId,
-        dto.amountCents,
-        "usd",
-        correlationId,
-        tx,
-      );
+      // 3. Record ledger entry. Positive amount → credit issued (debit credits,
+      // credit AR). Negative amount → credit reversal (debit AR, credit credits)
+      // posted with the absolute magnitude so the ledger's positive-only guard holds.
+      if (dto.amountCents >= 0) {
+        await this.ledgerService.recordCreditNoteIssued(
+          creditNoteId,
+          dto.amountCents,
+          "usd",
+          correlationId,
+          tx,
+        );
+      } else {
+        await this.ledgerService.recordCreditNoteReversed(
+          creditNoteId,
+          Math.abs(dto.amountCents),
+          "usd",
+          correlationId,
+          tx,
+        );
+      }
     });
 
     this.logger.log({
