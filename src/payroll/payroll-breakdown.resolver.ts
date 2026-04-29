@@ -167,12 +167,30 @@ export class PayrollBreakdownResolver {
     payDate.setUTCHours(0, 0, 0, 0);
     const discountStartDate = new Date(config.startDate);
     discountStartDate.setUTCHours(0, 0, 0, 0);
-    const discountEndDate = new Date(config.startDate);
-    discountEndDate.setUTCMonth(
-      discountStartDate.getUTCMonth() + config.durationMonths,
+    const discountEndDate = this.addMonthsClamped(
+      discountStartDate,
+      config.durationMonths,
     );
-    discountEndDate.setUTCHours(0, 0, 0, 0);
     return payDate >= discountStartDate && payDate < discountEndDate;
+  }
+
+  // Returns start + months, clamping the day to the target month's last day so
+  // Oct 31 + 4 months yields Feb 28 (not Mar 3 from setUTCMonth overflow).
+  private addMonthsClamped(start: Date, months: number): Date {
+    const startYear = start.getUTCFullYear();
+    const startMonth = start.getUTCMonth();
+    const startDay = start.getUTCDate();
+
+    const targetMonthIndex = startMonth + months;
+    const targetYear = startYear + Math.floor(targetMonthIndex / 12);
+    const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+
+    const lastDayOfTargetMonth = new Date(
+      Date.UTC(targetYear, targetMonth + 1, 0),
+    ).getUTCDate();
+    const clampedDay = Math.min(startDay, lastDayOfTargetMonth);
+
+    return new Date(Date.UTC(targetYear, targetMonth, clampedDay));
   }
 
   private calculatePercentageDiscount(
