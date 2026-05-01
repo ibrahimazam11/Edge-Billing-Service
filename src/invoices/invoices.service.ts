@@ -309,10 +309,8 @@ export class InvoicesService {
 
     for (const onboardingInvoice of pendingOnboarding) {
       try {
-        let onboardingCreditResult: CreditApplicationResult = {
-          creditApplied: 0,
-          newTotal: onboardingInvoice.totalAmountCents,
-        };
+        let onboardingCreditApplied = 0;
+        let onboardingFinalTotalCents = onboardingInvoice.totalAmountCents;
 
         await this.db.transaction(async (tx) => {
           validateTransition(
@@ -321,44 +319,62 @@ export class InvoicesService {
             INVOICE_TRANSITIONS,
           );
 
-          await this.invoicesRepository.update(
+          // Strip any draft-time surcharge so we can recompute it on the
+          // post-credit amount.
+          const { removedCents } = await this.stripExistingSurchargeLineItems(
             onboardingInvoice.id,
-            { status: "finalized", updatedAt: new Date() },
             tx,
           );
+          const rawSubtotalCents =
+            onboardingInvoice.totalAmountCents - removedCents;
 
-          await this.ledgerService.recordInvoiceFinalized(
+          const settled = await this.applyCreditsAndSurcharge(
             onboardingInvoice.id,
-            onboardingInvoice.totalAmountCents,
+            onboardingInvoice.customerId,
+            rawSubtotalCents,
             onboardingInvoice.currency,
             correlationId,
             tx,
           );
+          onboardingCreditApplied = settled.creditApplied;
+          onboardingFinalTotalCents = settled.finalTotalCents;
 
-          if (this.creditsService) {
-            onboardingCreditResult =
-              await this.creditsService.applyCreditsToInvoice(
-                onboardingInvoice.id,
-                onboardingInvoice.customerId,
-                onboardingInvoice.totalAmountCents,
-                onboardingInvoice.currency,
-                correlationId,
-                tx,
-              );
+          await this.invoicesRepository.update(
+            onboardingInvoice.id,
+            {
+              totalAmountCents: onboardingFinalTotalCents,
+              status: "finalized",
+              updatedAt: new Date(),
+            },
+            tx,
+          );
 
-            if (onboardingCreditResult.newTotal === 0) {
-              validateTransition(
-                "finalized" as InvoiceStatus,
-                "paid" as InvoiceStatus,
-                INVOICE_TRANSITIONS,
-              );
+          // Skip ledger entry when finalTotal is 0 (createEntry requires
+          // amountCents > 0). Full-credit-coverage invoices have no AR
+          // obligation; the credit_applied entry recorded by
+          // applyCreditsToInvoice is sufficient for audit.
+          if (onboardingFinalTotalCents > 0) {
+            await this.ledgerService.recordInvoiceFinalized(
+              onboardingInvoice.id,
+              onboardingFinalTotalCents,
+              onboardingInvoice.currency,
+              correlationId,
+              tx,
+            );
+          }
 
-              await this.invoicesRepository.update(
-                onboardingInvoice.id,
-                { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-                tx,
-              );
-            }
+          if (onboardingFinalTotalCents === 0) {
+            validateTransition(
+              "finalized" as InvoiceStatus,
+              "paid" as InvoiceStatus,
+              INVOICE_TRANSITIONS,
+            );
+
+            await this.invoicesRepository.update(
+              onboardingInvoice.id,
+              { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+              tx,
+            );
           }
         });
 
@@ -366,9 +382,9 @@ export class InvoicesService {
           message: "Onboarding invoice finalized",
           invoiceId: onboardingInvoice.id,
           customerId: onboardingInvoice.customerId,
-          totalAmountCents: onboardingInvoice.totalAmountCents,
-          creditApplied: onboardingCreditResult.creditApplied,
-          finalTotal: onboardingCreditResult.newTotal,
+          draftTotalAmountCents: onboardingInvoice.totalAmountCents,
+          creditApplied: onboardingCreditApplied,
+          finalTotalCents: onboardingFinalTotalCents,
           correlationId,
         });
 
@@ -382,7 +398,7 @@ export class InvoicesService {
             onboardingInvoice.customerId,
           );
 
-        if (onboardingCreditResult.newTotal === 0) {
+        if (onboardingFinalTotalCents === 0) {
           try {
             await this.sqsProducerService.publish(
               "invoice.paid",
@@ -624,10 +640,8 @@ export class InvoicesService {
     creditResult: CreditApplicationResult;
   }> {
     const now = new Date();
-    let creditResult: CreditApplicationResult = {
-      creditApplied: 0,
-      newTotal: draft.totalAmountCents,
-    };
+    let creditApplied = 0;
+    let finalTotalCents = draft.totalAmountCents;
 
     const result = await this.db.transaction(async (tx) => {
       validateTransition(
@@ -636,43 +650,57 @@ export class InvoicesService {
         INVOICE_TRANSITIONS,
       );
 
-      const finalized = await this.invoicesRepository.update(
+      // Strip any draft-time surcharge so we can recompute it on the
+      // post-credit amount. Returns 0 if the draft has no surcharge yet.
+      const { removedCents } = await this.stripExistingSurchargeLineItems(
         draft.id,
-        { status: "finalized", updatedAt: now },
         tx,
       );
+      const rawSubtotalCents = draft.totalAmountCents - removedCents;
 
-      await this.ledgerService.recordInvoiceFinalized(
+      const settled = await this.applyCreditsAndSurcharge(
         draft.id,
-        draft.totalAmountCents,
+        draft.customerId,
+        rawSubtotalCents,
         draft.currency,
         correlationId,
         tx,
       );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
 
-      if (this.creditsService) {
-        creditResult = await this.creditsService.applyCreditsToInvoice(
+      const finalized = await this.invoicesRepository.update(
+        draft.id,
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: now,
+        },
+        tx,
+      );
+
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
           draft.id,
-          draft.customerId,
-          draft.totalAmountCents,
+          finalTotalCents,
           draft.currency,
           correlationId,
           tx,
         );
+      }
 
-        if (creditResult.newTotal === 0) {
-          validateTransition(
-            "finalized" as InvoiceStatus,
-            "paid" as InvoiceStatus,
-            INVOICE_TRANSITIONS,
-          );
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
 
-          await this.invoicesRepository.update(
-            draft.id,
-            { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-            tx,
-          );
-        }
+        await this.invoicesRepository.update(
+          draft.id,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
       }
 
       return finalized ?? draft;
@@ -683,24 +711,24 @@ export class InvoicesService {
       invoiceId: draft.id,
       customerId: draft.customerId,
       subscriptionId: draft.subscriptionId,
-      totalAmountCents: draft.totalAmountCents,
-      creditApplied: creditResult.creditApplied,
-      finalTotal: creditResult.newTotal,
+      draftTotalAmountCents: draft.totalAmountCents,
+      creditApplied,
+      finalTotalCents,
       correlationId,
     });
 
-    const adjustedInvoice =
-      creditResult.creditApplied > 0
-        ? {
-            ...result,
-            totalAmountCents: creditResult.newTotal,
-            ...(creditResult.newTotal === 0
-              ? { status: "paid" as const, paidAt: new Date() }
-              : {}),
-          }
-        : result;
+    const adjustedInvoice = {
+      ...result,
+      totalAmountCents: finalTotalCents,
+      ...(finalTotalCents === 0
+        ? { status: "paid" as const, paidAt: new Date() }
+        : {}),
+    };
 
-    return { invoice: adjustedInvoice, creditResult };
+    return {
+      invoice: adjustedInvoice,
+      creditResult: { creditApplied, newTotal: finalTotalCents },
+    };
   }
 
   private async createInvoiceForSubscription(
@@ -711,24 +739,10 @@ export class InvoicesService {
     creditResult: CreditApplicationResult;
   }> {
     const lineItemsData = this.calculateLineItems(subscription);
-    let totalAmountCents = lineItemsData.reduce(
+    const rawSubtotalCents = lineItemsData.reduce(
       (sum, item) => sum + item.amountCents * item.quantity,
       0,
     );
-
-    const surcharge = await this.calculateSurcharge(
-      subscription.customerId,
-      totalAmountCents,
-    );
-    if (surcharge) {
-      lineItemsData.push({
-        type: "surcharge",
-        description: surcharge.description,
-        amountCents: surcharge.amountCents,
-        quantity: 1,
-      });
-      totalAmountCents += surcharge.amountCents;
-    }
 
     const invoiceId = generateId();
     const now = new Date();
@@ -745,10 +759,8 @@ export class InvoicesService {
       isPrepaid,
     );
 
-    let creditResult: CreditApplicationResult = {
-      creditApplied: 0,
-      newTotal: totalAmountCents,
-    };
+    let creditApplied = 0;
+    let finalTotalCents = rawSubtotalCents;
 
     const result = await this.db.transaction(async (tx) => {
       const created = await this.invoicesRepository.create(
@@ -785,6 +797,19 @@ export class InvoicesService {
         );
       }
 
+      // Apply credits against rawSubtotal, then compute surcharge on the
+      // post-credit amount. See applyCreditsAndSurcharge for rationale.
+      const settled = await this.applyCreditsAndSurcharge(
+        invoiceId,
+        subscription.customerId,
+        rawSubtotalCents,
+        subscription.currency,
+        correlationId,
+        tx,
+      );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
+
       validateTransition(
         "draft" as InvoiceStatus,
         "finalized" as InvoiceStatus,
@@ -793,41 +818,36 @@ export class InvoicesService {
 
       const finalized = await this.invoicesRepository.update(
         invoiceId,
-        { totalAmountCents, status: "finalized", updatedAt: now },
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: now,
+        },
         tx,
       );
 
-      await this.ledgerService.recordInvoiceFinalized(
-        invoiceId,
-        totalAmountCents,
-        subscription.currency,
-        correlationId,
-        tx,
-      );
-
-      if (this.creditsService) {
-        creditResult = await this.creditsService.applyCreditsToInvoice(
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
           invoiceId,
-          subscription.customerId,
-          totalAmountCents,
+          finalTotalCents,
           subscription.currency,
           correlationId,
           tx,
         );
+      }
 
-        if (creditResult.newTotal === 0) {
-          validateTransition(
-            "finalized" as InvoiceStatus,
-            "paid" as InvoiceStatus,
-            INVOICE_TRANSITIONS,
-          );
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
 
-          await this.invoicesRepository.update(
-            invoiceId,
-            { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-            tx,
-          );
-        }
+        await this.invoicesRepository.update(
+          invoiceId,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
       }
 
       return finalized ?? created;
@@ -838,24 +858,27 @@ export class InvoicesService {
       invoiceId,
       subscriptionId: subscription.id,
       customerId: subscription.customerId,
-      totalAmountCents,
-      creditApplied: creditResult.creditApplied,
-      finalTotal: creditResult.newTotal,
+      rawSubtotalCents,
+      creditApplied,
+      finalTotalCents,
       correlationId,
     });
 
     const adjustedInvoice =
-      creditResult.creditApplied > 0
+      creditApplied > 0 || finalTotalCents !== rawSubtotalCents
         ? {
             ...result,
-            totalAmountCents: creditResult.newTotal,
-            ...(creditResult.newTotal === 0
+            totalAmountCents: finalTotalCents,
+            ...(finalTotalCents === 0
               ? { status: "paid" as const, paidAt: new Date() }
               : {}),
           }
         : result;
 
-    return { invoice: adjustedInvoice, creditResult };
+    return {
+      invoice: adjustedInvoice,
+      creditResult: { creditApplied, newTotal: finalTotalCents },
+    };
   }
 
   /**
@@ -1032,10 +1055,8 @@ export class InvoicesService {
 
     const { invoice } = result;
 
-    let creditResult: CreditApplicationResult = {
-      creditApplied: 0,
-      newTotal: invoice.totalAmountCents,
-    };
+    let creditApplied = 0;
+    let finalTotalCents = invoice.totalAmountCents;
 
     await this.db.transaction(async (tx) => {
       validateTransition(
@@ -1044,56 +1065,70 @@ export class InvoicesService {
         INVOICE_TRANSITIONS,
       );
 
-      await this.invoicesRepository.update(
+      // Strip any draft-time surcharge so we can recompute it on the
+      // post-credit amount.
+      const { removedCents } = await this.stripExistingSurchargeLineItems(
         invoiceId,
-        { status: "finalized", updatedAt: new Date() },
         tx,
       );
+      const rawSubtotalCents = invoice.totalAmountCents - removedCents;
 
-      await this.ledgerService.recordInvoiceFinalized(
+      const settled = await this.applyCreditsAndSurcharge(
         invoiceId,
-        invoice.totalAmountCents,
+        invoice.customerId,
+        rawSubtotalCents,
         invoice.currency,
         correlationId,
         tx,
       );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
 
-      if (this.creditsService) {
-        creditResult = await this.creditsService.applyCreditsToInvoice(
+      await this.invoicesRepository.update(
+        invoiceId,
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: new Date(),
+        },
+        tx,
+      );
+
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
           invoiceId,
-          invoice.customerId,
-          invoice.totalAmountCents,
+          finalTotalCents,
           invoice.currency,
           correlationId,
           tx,
         );
+      }
 
-        if (creditResult.newTotal === 0) {
-          validateTransition(
-            "finalized" as InvoiceStatus,
-            "paid" as InvoiceStatus,
-            INVOICE_TRANSITIONS,
-          );
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
 
-          await this.invoicesRepository.update(
-            invoiceId,
-            { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-            tx,
-          );
-        }
+        await this.invoicesRepository.update(
+          invoiceId,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
       }
     });
 
     this.logger.log({
       message: "Invoice finalized",
       invoiceId,
-      totalAmountCents: invoice.totalAmountCents,
-      creditApplied: creditResult.creditApplied,
-      finalTotal: creditResult.newTotal,
+      draftTotalAmountCents: invoice.totalAmountCents,
+      creditApplied,
+      finalTotalCents,
       correlationId,
     });
 
-    if (creditResult.newTotal > 0 && this.chargesService) {
+    if (finalTotalCents > 0 && this.chargesService) {
       try {
         await this.chargesService.executePaymentForInvoice(
           invoiceId,
@@ -1314,6 +1349,113 @@ export class InvoicesService {
       quantity: item.quantity,
       breakdown: item.breakdown as Record<string, number> | null,
       createdAt: item.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Defensively removes any pre-existing `surcharge` line items on an invoice
+   * within the given transaction, returning their summed amount. Used by finalize
+   * paths to strip the draft-time surcharge so a fresh, post-credit-correct
+   * surcharge can be inserted by `applyCreditsAndSurcharge`. Also self-heals
+   * stale drafts created before this change was deployed.
+   */
+  private async stripExistingSurchargeLineItems(
+    invoiceId: string,
+    tx: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<{ removedCents: number }> {
+    const items = await this.invoicesRepository.getLineItemsByInvoiceId(
+      invoiceId,
+      tx,
+    );
+    const removedCents = items
+      .filter((li) => li.type === "surcharge")
+      .reduce((sum, li) => sum + li.amountCents * li.quantity, 0);
+
+    if (removedCents > 0) {
+      await this.invoicesRepository.deleteLineItemsByInvoiceIdAndType(
+        invoiceId,
+        "surcharge",
+        tx,
+      );
+    }
+    return { removedCents };
+  }
+
+  /**
+   * Finalize-time helper: applies credits against the raw subtotal, then
+   * computes credit-card surcharge on the post-credit amount and inserts a
+   * fresh `surcharge` line item if applicable. Returns the chargeable
+   * `finalTotalCents` so the caller can update the invoice + ledger with the
+   * correct amount.
+   *
+   * Why this ordering: credits should reduce what the customer is actually
+   * being asked to pay, and surcharge applies only to that residual cash.
+   * Computing surcharge on the pre-credit subtotal would charge a percentage
+   * of an amount the customer is not paying.
+   */
+  private async applyCreditsAndSurcharge(
+    invoiceId: string,
+    customerId: string,
+    rawSubtotalCents: number,
+    currency: string,
+    correlationId: string,
+    tx: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<{
+    creditApplied: number;
+    surchargeCents: number;
+    finalTotalCents: number;
+  }> {
+    const creditResult: CreditApplicationResult = this.creditsService
+      ? await this.creditsService.applyCreditsToInvoice(
+          invoiceId,
+          customerId,
+          rawSubtotalCents,
+          currency,
+          correlationId,
+          tx,
+        )
+      : { creditApplied: 0, newTotal: rawSubtotalCents };
+
+    // postCredit guard: covers the flat-fee surcharge edge case where
+    // calculateSurcharge would otherwise return a positive amount even when
+    // the customer owes $0 in cash after credits.
+    if (creditResult.newTotal <= 0) {
+      return {
+        creditApplied: creditResult.creditApplied,
+        surchargeCents: 0,
+        finalTotalCents: creditResult.newTotal,
+      };
+    }
+
+    const surcharge = await this.calculateSurcharge(
+      customerId,
+      creditResult.newTotal,
+    );
+    if (!surcharge) {
+      return {
+        creditApplied: creditResult.creditApplied,
+        surchargeCents: 0,
+        finalTotalCents: creditResult.newTotal,
+      };
+    }
+
+    await this.invoicesRepository.createLineItem(
+      {
+        id: generateId(),
+        invoiceId,
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+        createdAt: new Date(),
+      },
+      tx,
+    );
+
+    return {
+      creditApplied: creditResult.creditApplied,
+      surchargeCents: surcharge.amountCents,
+      finalTotalCents: creditResult.newTotal + surcharge.amountCents,
     };
   }
 

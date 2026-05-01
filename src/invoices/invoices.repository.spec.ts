@@ -528,7 +528,9 @@ describe("InvoicesRepository", () => {
       // the mock simulates that by returning empty.
       selectChain.limit.mockResolvedValueOnce([]);
 
-      const result = await repository.findOpenRecurringDraft("cust-only-finalized");
+      const result = await repository.findOpenRecurringDraft(
+        "cust-only-finalized",
+      );
 
       expect(result).toBeNull();
     });
@@ -536,7 +538,9 @@ describe("InvoicesRepository", () => {
     it("returns null when only an onboarding draft exists (filter excludes type!=recurring)", async () => {
       selectChain.limit.mockResolvedValueOnce([]);
 
-      const result = await repository.findOpenRecurringDraft("cust-onboarding-only");
+      const result = await repository.findOpenRecurringDraft(
+        "cust-onboarding-only",
+      );
 
       expect(result).toBeNull();
     });
@@ -544,7 +548,8 @@ describe("InvoicesRepository", () => {
     it("returns null when only a one-time invoice exists", async () => {
       selectChain.limit.mockResolvedValueOnce([]);
 
-      const result = await repository.findOpenRecurringDraft("cust-onetime-only");
+      const result =
+        await repository.findOpenRecurringDraft("cust-onetime-only");
 
       expect(result).toBeNull();
     });

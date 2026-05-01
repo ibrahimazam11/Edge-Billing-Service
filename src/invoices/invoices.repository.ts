@@ -121,8 +121,11 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       );
   }
 
-  async getLineItemsByInvoiceId(invoiceId: string): Promise<InvoiceLineItem[]> {
-    return this.db
+  async getLineItemsByInvoiceId(
+    invoiceId: string,
+    tx?: TransactionClient,
+  ): Promise<InvoiceLineItem[]> {
+    return this.conn(tx)
       .select()
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoiceId, invoiceId));
