@@ -1879,3 +1879,566 @@ describe("InvoicesService - Surcharge", () => {
     });
   });
 });
+
+// --- Finalize-time surcharge ordering (post-credit) ---
+
+describe("InvoicesService - finalize-time surcharge ordering", () => {
+  let service: InvoicesService;
+  let repo: jest.Mocked<InvoicesRepository>;
+  let mockCreditsService: { applyCreditsToInvoice: jest.Mock };
+  let mockChargesService: { executePaymentForInvoice: jest.Mock };
+  const txMock3 = { id: "tx-finalize" };
+  const mockDb3 = {
+    transaction: jest.fn((cb: (tx: typeof txMock3) => Promise<unknown>) =>
+      cb(txMock3),
+    ),
+  };
+  const mockLedger = {
+    recordInvoiceFinalized: jest.fn().mockResolvedValue("ledger-fin"),
+    recordInvoiceVoided: jest.fn(),
+  };
+  const mockSqs = { publish: jest.fn().mockResolvedValue(undefined) };
+  const mockSurchargeCfg = { getConfig: jest.fn() };
+  const mockPmSvc = { getDefaultPaymentMethod: jest.fn() };
+  const mockSubsRepo = { findDueForBilling: jest.fn().mockResolvedValue([]) };
+  const mockCustomers = {
+    findById: jest.fn().mockResolvedValue({
+      id: "cust-123",
+      chargeDay: 15,
+      isPrepaid: true,
+    }),
+  };
+
+  const buildService = async () => {
+    const { CHARGES_SERVICE } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("./invoices.service") as { CHARGES_SERVICE: symbol };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        InvoicesService,
+        { provide: InvoicesRepository, useValue: repo },
+        { provide: SubscriptionsRepository, useValue: mockSubsRepo },
+        { provide: DRIZZLE_PROVIDER, useValue: mockDb3 },
+        { provide: LedgerService, useValue: mockLedger },
+        { provide: SqsProducerService, useValue: mockSqs },
+        { provide: CreditsService, useValue: mockCreditsService },
+        { provide: SurchargeConfigService, useValue: mockSurchargeCfg },
+        { provide: PaymentMethodsService, useValue: mockPmSvc },
+        { provide: CustomersService, useValue: mockCustomers },
+        { provide: CHARGES_SERVICE, useValue: mockChargesService },
+      ],
+    }).compile();
+    return module.get<InvoicesService>(InvoicesService);
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    repo = {
+      findById: jest.fn(),
+      findByIdWithLineItems: jest.fn(),
+      findAll: jest.fn(),
+      findPendingOnboarding: jest.fn().mockResolvedValue([]),
+      findDuplicateForSubscription: jest.fn().mockResolvedValue([]),
+      getLineItemsByInvoiceId: jest.fn().mockResolvedValue([]),
+      getLineItemsByInvoiceIds: jest.fn(),
+      create: jest.fn().mockResolvedValue(mockInvoiceRow),
+      createLineItem: jest.fn(),
+      createLineItems: jest.fn(),
+      update: jest
+        .fn()
+        .mockImplementation((_id: string, patch: Record<string, unknown>) => ({
+          ...mockInvoiceRow,
+          ...patch,
+        })),
+      updateWithConcurrencyCheck: jest.fn(),
+      deleteLineItemsByInvoiceId: jest.fn(),
+      deleteLineItemsByInvoiceIdAndType: jest.fn(),
+      findOpenRecurringDraft: jest.fn(),
+      countOpenRecurringDrafts: jest.fn().mockResolvedValue(1),
+      findForBillingHistory: jest.fn(),
+    } as unknown as jest.Mocked<InvoicesRepository>;
+    mockCreditsService = {
+      applyCreditsToInvoice: jest
+        .fn()
+        .mockResolvedValue({ creditApplied: 0, newTotal: 0 }),
+    };
+    mockChargesService = {
+      executePaymentForInvoice: jest.fn().mockResolvedValue(undefined),
+    };
+    service = await buildService();
+  });
+
+  // ----- Recurring (createInvoiceForSubscription) -----
+  describe("recurring create+finalize", () => {
+    it("full credit coverage with percentage surcharge → no surcharge line item, total=0", async () => {
+      // $20 invoice subscription
+      const sub = { ...mockSubscription, amountCents: 2000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      // Credit covers full $20
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 0,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-fc",
+      );
+
+      // Credits applied against rawSubtotal ($20), NOT $20.60
+      expect(mockCreditsService.applyCreditsToInvoice).toHaveBeenCalledWith(
+        expect.any(String),
+        "cust-123",
+        2000,
+        "usd",
+        "corr-fc",
+        txMock3,
+      );
+      // No surcharge line item inserted (postCredit guard kicked in)
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      // Final invoice total = 0
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ totalAmountCents: 0, status: "finalized" }),
+        txMock3,
+      );
+      // Ledger entry SKIPPED when finalTotal === 0 (createEntry rejects amount<=0).
+      // The credit_applied entry inside applyCreditsToInvoice is sufficient for audit.
+      expect(mockLedger.recordInvoiceFinalized).not.toHaveBeenCalled();
+      // Auto-paid transition fired
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ status: "paid" }),
+        txMock3,
+      );
+    });
+
+    it("full credit coverage with flat-fee surcharge → no surcharge (postCredit guard)", async () => {
+      const sub = { ...mockSubscription, amountCents: 2000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "flat_fee",
+        surchargeValue: 1, // $1
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 0,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-ff",
+      );
+
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ totalAmountCents: 0, status: "finalized" }),
+        txMock3,
+      );
+    });
+
+    it("partial credit with percentage surcharge → surcharge computed on post-credit amount", async () => {
+      // $100 invoice, $20 credit, 3% surcharge → final total = 80 + 2.40 = $82.40
+      const sub = { ...mockSubscription, amountCents: 10000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 8000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-pc",
+      );
+
+      // Credits called with rawSubtotal ($100), not $103
+      expect(mockCreditsService.applyCreditsToInvoice).toHaveBeenCalledWith(
+        expect.any(String),
+        "cust-123",
+        10000,
+        "usd",
+        "corr-pc",
+        txMock3,
+      );
+      // Surcharge line item inserted with $2.40 (3% of $80)
+      expect(repo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "surcharge",
+          amountCents: 240,
+          description: "Credit card surcharge",
+        }),
+        txMock3,
+      );
+      // Final total = 8240 cents
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          totalAmountCents: 8240,
+          status: "finalized",
+        }),
+        txMock3,
+      );
+      expect(mockLedger.recordInvoiceFinalized).toHaveBeenCalledWith(
+        expect.any(String),
+        8240,
+        "usd",
+        "corr-pc",
+        txMock3,
+      );
+    });
+
+    it("no credit + percentage surcharge → unchanged behavior (rawSubtotal == postCredit)", async () => {
+      // $100 invoice, no credit, 3% → final = $103
+      const sub = { ...mockSubscription, amountCents: 10000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 0,
+        newTotal: 10000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-nc",
+      );
+
+      expect(repo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "surcharge", amountCents: 300 }),
+        txMock3,
+      );
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          totalAmountCents: 10300,
+          status: "finalized",
+        }),
+        txMock3,
+      );
+    });
+
+    it("ACH customer with credit → no surcharge regardless", async () => {
+      const sub = { ...mockSubscription, amountCents: 10000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 8000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-ach",
+      );
+
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          totalAmountCents: 8000,
+          status: "finalized",
+        }),
+        txMock3,
+      );
+    });
+
+    it("CC customer with no surcharge config → no surcharge", async () => {
+      const sub = { ...mockSubscription, amountCents: 10000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([sub]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue(null);
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 0,
+        newTotal: 10000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-noc",
+      );
+
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+    });
+
+    it("draft already exists with stale surcharge → strip first, recompute on post-credit", async () => {
+      // Pre-existing draft created before this change, with surcharge $0.60 baked in
+      const staleDraft = {
+        ...mockInvoiceRow,
+        id: "stale-draft-1",
+        status: "draft",
+        totalAmountCents: 2060, // $20 + $0.60 surcharge
+      };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([
+        { ...mockSubscription, amountCents: 2000 },
+      ]);
+      repo.findDuplicateForSubscription.mockResolvedValueOnce([staleDraft]);
+      repo.update.mockResolvedValue({ ...staleDraft, status: "finalized" });
+      // Draft has the stale surcharge line item
+      repo.getLineItemsByInvoiceId.mockResolvedValue([
+        {
+          id: "li-stale-surcharge",
+          invoiceId: "stale-draft-1",
+          type: "surcharge",
+          description: "Credit card surcharge",
+          amountCents: 60,
+          quantity: 1,
+          breakdown: null,
+          createdAt: new Date(),
+        } as never,
+      ]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 0,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-stale",
+      );
+
+      // Stale surcharge stripped before credits applied
+      expect(repo.deleteLineItemsByInvoiceIdAndType).toHaveBeenCalledWith(
+        "stale-draft-1",
+        "surcharge",
+        txMock3,
+      );
+      const stripCallOrder =
+        repo.deleteLineItemsByInvoiceIdAndType.mock.invocationCallOrder[0];
+      const creditCallOrder =
+        mockCreditsService.applyCreditsToInvoice.mock.invocationCallOrder[0];
+      expect(stripCallOrder).toBeLessThan(creditCallOrder);
+
+      // Credits applied against the rawSubtotal ($20), not the stale total ($20.60)
+      expect(mockCreditsService.applyCreditsToInvoice).toHaveBeenCalledWith(
+        "stale-draft-1",
+        "cust-123",
+        2000,
+        "usd",
+        "corr-stale",
+        txMock3,
+      );
+      // No new surcharge inserted (postCredit = 0 → guard skips)
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      // Final total = 0
+      expect(repo.update).toHaveBeenCalledWith(
+        "stale-draft-1",
+        expect.objectContaining({ totalAmountCents: 0, status: "finalized" }),
+        txMock3,
+      );
+    });
+  });
+
+  // ----- Onboarding/one-time (finalizeAndCharge via generateInvoicesForDueSubscriptions) -----
+  describe("onboarding / one-time finalize", () => {
+    const onboardingDraft = {
+      ...mockInvoiceRow,
+      id: "onb-1",
+      type: "onboarding" as const,
+      subscriptionId: null,
+      status: "draft",
+      totalAmountCents: 10300, // $100 + $3 baked-in surcharge
+      dueDate: new Date("2026-02-28T00:00:00.000Z"),
+    };
+    const surchargeLineItem = {
+      id: "li-onb-surcharge",
+      invoiceId: "onb-1",
+      type: "surcharge",
+      description: "Credit card surcharge",
+      amountCents: 300,
+      quantity: 1,
+      breakdown: null,
+      createdAt: new Date(),
+    };
+
+    it("partial credit recomputes surcharge on post-credit amount", async () => {
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([]);
+      repo.findPendingOnboarding.mockResolvedValueOnce([onboardingDraft]);
+      // findByIdWithLineItems is what finalizeAndCharge reads
+      repo.findByIdWithLineItems.mockResolvedValue({
+        invoice: onboardingDraft,
+        lineItems: [surchargeLineItem],
+      } as never);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([
+        surchargeLineItem as never,
+      ]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 8000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-onb-p",
+      );
+
+      // Stale $3 surcharge stripped
+      expect(repo.deleteLineItemsByInvoiceIdAndType).toHaveBeenCalledWith(
+        "onb-1",
+        "surcharge",
+        txMock3,
+      );
+      // Credits against rawSubtotal ($100 = 10300 - 300)
+      expect(mockCreditsService.applyCreditsToInvoice).toHaveBeenCalledWith(
+        "onb-1",
+        "cust-123",
+        10000,
+        "usd",
+        "corr-onb-p",
+        txMock3,
+      );
+      // Fresh surcharge $2.40 (3% of $80) inserted
+      expect(repo.createLineItem).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "surcharge", amountCents: 240 }),
+        txMock3,
+      );
+      // Final total = 8240
+      expect(repo.update).toHaveBeenCalledWith(
+        "onb-1",
+        expect.objectContaining({
+          totalAmountCents: 8240,
+          status: "finalized",
+        }),
+        txMock3,
+      );
+      expect(mockLedger.recordInvoiceFinalized).toHaveBeenCalledWith(
+        "onb-1",
+        8240,
+        "usd",
+        "corr-onb-p",
+        txMock3,
+      );
+    });
+
+    it("full credit on onboarding → no surcharge, status=paid, no charge call", async () => {
+      const draft = { ...onboardingDraft, totalAmountCents: 2060 };
+      const stale = { ...surchargeLineItem, amountCents: 60 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([]);
+      repo.findPendingOnboarding.mockResolvedValueOnce([draft]);
+      repo.findByIdWithLineItems.mockResolvedValue({
+        invoice: draft,
+        lineItems: [stale],
+      } as never);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([stale as never]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({ type: "card" });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 0,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-onb-fc",
+      );
+
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      expect(repo.update).toHaveBeenCalledWith(
+        "onb-1",
+        expect.objectContaining({ totalAmountCents: 0, status: "finalized" }),
+        txMock3,
+      );
+      expect(repo.update).toHaveBeenCalledWith(
+        "onb-1",
+        expect.objectContaining({ status: "paid" }),
+        txMock3,
+      );
+      // Charges service must NOT be invoked when finalTotal = 0
+      expect(
+        mockChargesService.executePaymentForInvoice,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("ACH onboarding with credit → no surcharge", async () => {
+      const draft = { ...onboardingDraft, totalAmountCents: 10000 };
+      mockSubsRepo.findDueForBilling.mockResolvedValueOnce([]);
+      repo.findPendingOnboarding.mockResolvedValueOnce([draft]);
+      repo.findByIdWithLineItems.mockResolvedValue({
+        invoice: draft,
+        lineItems: [],
+      } as never);
+      repo.getLineItemsByInvoiceId.mockResolvedValue([]);
+      mockPmSvc.getDefaultPaymentMethod.mockResolvedValue({
+        type: "bank_account",
+      });
+      mockSurchargeCfg.getConfig.mockResolvedValue({
+        surchargeType: "percentage",
+        surchargeValue: 3,
+      });
+      mockCreditsService.applyCreditsToInvoice.mockResolvedValue({
+        creditApplied: 2000,
+        newTotal: 8000,
+      });
+
+      await service.generateInvoicesForDueSubscriptions(
+        "2026-03-01",
+        "corr-onb-ach",
+      );
+
+      const surchargeInserts = (
+        repo.createLineItem.mock.calls as unknown[][]
+      ).filter((c) => (c[0] as { type: string }).type === "surcharge");
+      expect(surchargeInserts).toHaveLength(0);
+      expect(repo.update).toHaveBeenCalledWith(
+        "onb-1",
+        expect.objectContaining({
+          totalAmountCents: 8000,
+          status: "finalized",
+        }),
+        txMock3,
+      );
+    });
+  });
+});
