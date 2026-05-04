@@ -103,14 +103,5 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-  },
-  "pnpm": {
-    "overrides": {
-      "fast-xml-parser": "^5.5.6",
-      "lodash": "^4.18.0",
-      "minimatch@<9.0.7": "^9.0.7",
-      "multer": "^2.1.1",
-      "path-to-regexp@>=8 <8.4.0": "^8.4.0"
-    }
   }
 }
