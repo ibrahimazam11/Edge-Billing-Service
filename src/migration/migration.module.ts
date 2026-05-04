@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { CustomersModule } from "../customers/customers.module";
 import { GatewayModule } from "../gateway/gateway.module";
 import { InvoicesModule } from "../invoices/invoices.module";
@@ -23,7 +23,7 @@ import { monolithDatabaseProvider } from "./monolith-database.provider";
     GatewayModule,
     InvoicesModule,
     LedgerModule,
-    PaymentMethodsModule,
+    forwardRef(() => PaymentMethodsModule),
     SubscriptionsModule,
     SurchargesModule,
     FeatureFlagsModule,

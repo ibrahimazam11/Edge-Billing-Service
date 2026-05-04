@@ -98,6 +98,31 @@ export class LedgerService implements OnModuleInit {
     );
   }
 
+  /**
+   * Reverses a previously issued credit (used by set-balance flow when admin
+   * lowers a customer's balance). Swaps the debit/credit accounts of
+   * recordCreditNoteIssued; amountCents must be the positive magnitude.
+   */
+  async recordCreditNoteReversed(
+    creditNoteId: string,
+    amountCents: number,
+    currency: string,
+    correlationId: string,
+    tx?: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<string> {
+    return this.createEntry(
+      "accounts_receivable",
+      "credits",
+      amountCents,
+      currency,
+      "credit_note",
+      creditNoteId,
+      "Credit note reversed",
+      correlationId,
+      tx,
+    );
+  }
+
   async recordCreditApplied(
     invoiceId: string,
     amountCents: number,

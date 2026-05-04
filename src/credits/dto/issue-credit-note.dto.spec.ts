@@ -43,12 +43,12 @@ describe("IssueCreditNoteDto", () => {
     expect(errors.some((e) => e.property === "customerId")).toBe(true);
   });
 
-  it("should reject missing invoiceId", async () => {
+  it("should accept missing invoiceId (optional — general account credit)", async () => {
     const data = { ...validData };
     delete (data as Record<string, unknown>).invoiceId;
     const dto = plainToInstance(IssueCreditNoteDto, data);
     const errors = await validate(dto);
-    expect(errors.some((e) => e.property === "invoiceId")).toBe(true);
+    expect(errors.some((e) => e.property === "invoiceId")).toBe(false);
   });
 
   it("should reject invalid invoiceId format", async () => {
@@ -78,13 +78,13 @@ describe("IssueCreditNoteDto", () => {
     expect(errors.some((e) => e.property === "amountCents")).toBe(true);
   });
 
-  it("should reject negative amountCents", async () => {
+  it("should accept negative amountCents (set-balance reduction)", async () => {
     const dto = plainToInstance(IssueCreditNoteDto, {
       ...validData,
       amountCents: -100,
     });
     const errors = await validate(dto);
-    expect(errors.some((e) => e.property === "amountCents")).toBe(true);
+    expect(errors.some((e) => e.property === "amountCents")).toBe(false);
   });
 
   it("should reject empty reason", async () => {

@@ -44,13 +44,17 @@ export class CustomersService {
       return existing;
     }
 
+    const id = generateId();
+
     const stripeCustomer = await this.gateway.createCustomer({
       email: payload.email,
       name: payload.name,
-      metadata: payload.metadata as Record<string, string> | undefined,
+      metadata: {
+        ...(payload.metadata as Record<string, string> | undefined),
+        billingCustomerId: id,
+        monolithCustomerId: payload.monolithCustomerId,
+      },
     });
-
-    const id = generateId();
     const now = new Date();
 
     const created = await this.customersRepository.create({
@@ -60,6 +64,8 @@ export class CustomersService {
       name: payload.name,
       email: payload.email,
       status: "active",
+      chargeDay: payload.chargeDay ?? 1,
+      isPrepaid: payload.isPrepaid ?? true,
       metadata: payload.metadata ?? null,
       createdAt: now,
       updatedAt: now,
@@ -144,6 +150,14 @@ export class CustomersService {
     return customer ? this.toResponseDto(customer) : null;
   }
 
+  async findByStripeCustomerId(
+    stripeCustomerId: string,
+  ): Promise<CustomerResponseDto | null> {
+    const customer =
+      await this.customersRepository.findByStripeCustomerId(stripeCustomerId);
+    return customer ? this.toResponseDto(customer) : null;
+  }
+
   async findAll(
     query: CustomerQueryDto,
   ): Promise<PaginatedResult<CustomerResponseDto>> {
@@ -175,6 +189,8 @@ export class CustomersService {
       name: customer.name,
       email: customer.email,
       status: customer.status,
+      chargeDay: customer.chargeDay,
+      isPrepaid: customer.isPrepaid,
       metadata: customer.metadata as Record<string, unknown> | null,
       createdAt: customer.createdAt.toISOString(),
       updatedAt: customer.updatedAt.toISOString(),

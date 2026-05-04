@@ -13,6 +13,8 @@ import { AdminService } from "./admin.service";
 import { AuditTrailService } from "./audit-trail.service";
 import { AuditTrailRepository } from "./audit-trail.repository";
 import { AuditTrailInterceptor } from "./audit-trail.interceptor";
+import { TimeMachineController } from "./time-machine.controller";
+import { TimeMachineService } from "./time-machine.service";
 
 @Module({
   imports: [
@@ -25,11 +27,12 @@ import { AuditTrailInterceptor } from "./audit-trail.interceptor";
     RefundsModule,
     CreditsModule,
   ],
-  controllers: [AdminController],
+  controllers: [AdminController, TimeMachineController],
   providers: [
     AdminService,
     AuditTrailService,
     AuditTrailRepository,
+    TimeMachineService,
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditTrailInterceptor,

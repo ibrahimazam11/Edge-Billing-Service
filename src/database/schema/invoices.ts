@@ -18,6 +18,7 @@ export const invoices = pgTable(
       .notNull()
       .references(() => customers.id),
     subscriptionId: uuid("subscription_id").references(() => subscriptions.id),
+    type: varchar("type", { length: 20 }).notNull().default("recurring"),
     status: varchar("status", { length: 20 }).notNull().default("draft"),
     totalAmountCents: integer("total_amount_cents").notNull().default(0),
     currency: varchar("currency", { length: 3 }).notNull().default("usd"),
@@ -40,6 +41,7 @@ export const invoices = pgTable(
   },
   (table) => [
     index("idx_invoices_customer_id").on(table.customerId),
+    index("idx_invoices_type").on(table.type),
     index("idx_invoices_status").on(table.status),
     index("idx_invoices_subscription_id").on(table.subscriptionId),
     index("idx_invoices_due_date").on(table.dueDate),

@@ -42,6 +42,12 @@ describe("WebhookProcessingService", () => {
     update: jest.Mock;
   };
 
+  let mockWebhookEventsRepo: {
+    logEvent: jest.Mock;
+    updateStatus: jest.Mock;
+    findByStripeEventId: jest.Mock;
+  };
+
   // Transaction mock — service still orchestrates tx boundaries
   const txMock = { id: "tx-mock" };
   let mockDb: {
@@ -94,6 +100,18 @@ describe("WebhookProcessingService", () => {
       advanceBillingPeriod: jest.fn().mockResolvedValue(undefined),
     };
 
+    mockWebhookEventsRepo = {
+      logEvent: jest.fn().mockResolvedValue({ id: "wh-evt-mock-id" }),
+      updateStatus: jest.fn().mockResolvedValue(undefined),
+      findByStripeEventId: jest.fn().mockResolvedValue([]),
+    };
+
+    const mockCustomersRepo = {
+      findById: jest
+        .fn()
+        .mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
+    };
+
     service = new WebhookProcessingService(
       mockDb as unknown as DrizzleDatabase,
       mockGatewayRegistry as unknown as GatewayRegistry,
@@ -102,6 +120,8 @@ describe("WebhookProcessingService", () => {
       mockIdempotencyService as unknown as IdempotencyService,
       mockChargesRepo as unknown as ChargesRepository,
       mockInvoicesRepo as unknown as InvoicesRepository,
+      mockCustomersRepo as any,
+      mockWebhookEventsRepo as any,
       mockSubscriptionsService,
     );
 
@@ -478,10 +498,10 @@ describe("WebhookProcessingService", () => {
         txMock,
       );
 
-      // Verify billing period advanced (outside transaction)
+      // Verify billing period is NOT advanced by webhook — advance moved to finalization path
       expect(
         mockSubscriptionsService.advanceBillingPeriod,
-      ).toHaveBeenCalledWith("sub-1", correlationId);
+      ).not.toHaveBeenCalled();
 
       // Verify SQS events published
       expect(mockSqsProducerService.publish).toHaveBeenCalledWith(
@@ -506,7 +526,7 @@ describe("WebhookProcessingService", () => {
       );
     });
 
-    it("should tolerate billing period advance failure", async () => {
+    it("should NOT advance billing period (advance moved to invoice finalization path)", async () => {
       mockAdapter.verifyAndParseWebhook.mockResolvedValue(makeSucceededEvent());
       const payload = createWebhookPayload("payment_intent.succeeded", {
         id: "pi_test_123",
@@ -515,37 +535,14 @@ describe("WebhookProcessingService", () => {
       mockChargesRepo.findByStripePaymentIntentId.mockResolvedValue(mockCharge);
       mockInvoicesRepo.findById.mockResolvedValue(mockInvoice);
 
-      mockSubscriptionsService.advanceBillingPeriod.mockRejectedValue(
-        new Error("Subscription not found"),
-      );
-
-      await service.processWebhookEvent(payload, correlationId);
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "Failed to advance billing period after webhook payment",
-        }),
-      );
-
-      // Events should still be published
-      expect(mockSqsProducerService.publish).toHaveBeenCalledTimes(2);
-    });
-
-    it("should skip billing period advance when no subscriptionId on invoice", async () => {
-      mockAdapter.verifyAndParseWebhook.mockResolvedValue(makeSucceededEvent());
-      const payload = createWebhookPayload("payment_intent.succeeded", {
-        id: "pi_test_123",
-      });
-
-      const invoiceNoSub = { ...mockInvoice, subscriptionId: null };
-      mockChargesRepo.findByStripePaymentIntentId.mockResolvedValue(mockCharge);
-      mockInvoicesRepo.findById.mockResolvedValue(invoiceNoSub);
-
       await service.processWebhookEvent(payload, correlationId);
 
       expect(
         mockSubscriptionsService.advanceBillingPeriod,
       ).not.toHaveBeenCalled();
+
+      // Events should still be published
+      expect(mockSqsProducerService.publish).toHaveBeenCalledTimes(2);
     });
 
     it("should handle invoice not found — log warn and return", async () => {
@@ -748,7 +745,12 @@ describe("WebhookProcessingService", () => {
   });
 
   describe("service without SubscriptionsService", () => {
-    it("should skip billing period advance when SubscriptionsService not injected", async () => {
+    it("should process webhook normally when SubscriptionsService not injected (optional dep)", async () => {
+      const mockCustomersRepoNoSubs = {
+        findById: jest
+          .fn()
+          .mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
+      };
       const serviceNoSubs = new WebhookProcessingService(
         mockDb as unknown as DrizzleDatabase,
         mockGatewayRegistry as unknown as GatewayRegistry,
@@ -757,6 +759,8 @@ describe("WebhookProcessingService", () => {
         mockIdempotencyService as unknown as IdempotencyService,
         mockChargesRepo as unknown as ChargesRepository,
         mockInvoicesRepo as unknown as InvoicesRepository,
+        mockCustomersRepoNoSubs as any,
+        mockWebhookEventsRepo as any,
       );
 
       mockAdapter.verifyAndParseWebhook.mockResolvedValue(makeSucceededEvent());

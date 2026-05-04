@@ -32,8 +32,19 @@ export function getTestDatabase(): TestDatabase {
 /**
  * Ensure the test database exists and has tables.
  * Creates the database if it doesn't exist, then applies real Drizzle migrations.
+ *
+ * SAFETY: Refuses to run against any database whose name doesn't end with "_test".
  */
 export async function setupTestDatabase(): Promise<void> {
+  const dbName = process.env.DATABASE_NAME ?? "billing_service_test";
+  if (!dbName.endsWith("_test")) {
+    throw new Error(
+      `setupTestDatabase() refused: database "${dbName}" does not end with "_test". ` +
+        `This safeguard prevents accidental schema drops on non-test databases. ` +
+        `Check .env.test is present and DATABASE_NAME ends with "_test".`,
+    );
+  }
+
   const adminPool = new Pool({
     host: process.env.DATABASE_HOST ?? "localhost",
     port: parseInt(process.env.DATABASE_PORT ?? "5432", 10),
@@ -41,8 +52,6 @@ export async function setupTestDatabase(): Promise<void> {
     user: process.env.DATABASE_USER ?? "postgres",
     password: process.env.DATABASE_PASSWORD ?? "postgres",
   });
-
-  const dbName = process.env.DATABASE_NAME ?? "billing_service_test";
 
   try {
     await adminPool.query(`CREATE DATABASE "${dbName}"`);
@@ -86,8 +95,20 @@ export async function setupTestDatabase(): Promise<void> {
 /**
  * Clean all data from test tables (preserves table structure).
  * Order matters due to foreign key constraints.
+ *
+ * SAFETY: Refuses to run against any database whose name doesn't end with "_test".
+ * This prevents accidental data wipe on dev/UAT/prod if .env.test is missing or
+ * misconfigured.
  */
 export async function cleanDatabase(): Promise<void> {
+  const dbName = process.env.DATABASE_NAME ?? "billing_service_test";
+  if (!dbName.endsWith("_test")) {
+    throw new Error(
+      `cleanDatabase() refused: database "${dbName}" does not end with "_test". ` +
+        `This safeguard prevents accidental TRUNCATE on non-test databases. ` +
+        `Check .env.test is present and DATABASE_NAME ends with "_test".`,
+    );
+  }
   const testDb = getTestDatabase();
   // TRUNCATE bypasses row-level triggers (including immutability triggers on ledger_entries)
   await testDb.execute(

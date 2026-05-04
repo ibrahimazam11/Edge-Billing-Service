@@ -20,6 +20,7 @@ describe("MonolithEventsConsumer", () => {
   };
   let mockSubscriptionsService: {
     updatePricing: jest.Mock;
+    applyPayrollUpdate: jest.Mock;
   };
   let mockWebhookProcessingService: {
     processWebhookEvent: jest.Mock;
@@ -43,6 +44,7 @@ describe("MonolithEventsConsumer", () => {
 
     mockSubscriptionsService = {
       updatePricing: jest.fn().mockResolvedValue(0),
+      applyPayrollUpdate: jest.fn().mockResolvedValue(0),
     };
 
     mockWebhookProcessingService = {
@@ -165,9 +167,10 @@ describe("MonolithEventsConsumer", () => {
   it("should route payroll.calculated events", async () => {
     const envelope = createEnvelope("payroll.calculated", {
       monolithCustomerId: "cust-1",
-      amountCents: 50000,
+      totalAmountCents: 50000,
       currency: "USD",
-      calculationDate: "2026-02-01",
+
+      employees: [],
     });
     const message = createSqsMessage(envelope);
 
@@ -365,9 +368,10 @@ describe("MonolithEventsConsumer", () => {
 
       const envelope = createEnvelope("payroll.calculated", {
         monolithCustomerId: "mono-cust-1",
-        amountCents: 75000,
+        totalAmountCents: 75000,
         currency: "usd",
-        calculationDate: "2026-02-01",
+
+        employees: [],
       });
       const message = createSqsMessage(envelope);
 
@@ -383,17 +387,16 @@ describe("MonolithEventsConsumer", () => {
   describe("payroll.calculated event handling", () => {
     const payrollPayload = {
       monolithCustomerId: "mono-cust-1",
-      amountCents: 75000,
       currency: "usd",
-      calculationDate: "2026-02-01",
+      employees: [],
     };
 
-    it("should process payroll event and call updatePricing with correct args", async () => {
+    it("should process payroll event and delegate to applyPayrollUpdate", async () => {
       mockCustomersService.findByMonolithId.mockResolvedValue({
         id: "cust-resolved",
         monolithCustomerId: "mono-cust-1",
       });
-      mockSubscriptionsService.updatePricing.mockResolvedValue(1);
+      mockSubscriptionsService.applyPayrollUpdate.mockResolvedValue(75000);
 
       const envelope = createEnvelope("payroll.calculated", payrollPayload);
       const message = createSqsMessage(envelope);
@@ -403,9 +406,9 @@ describe("MonolithEventsConsumer", () => {
       expect(mockCustomersService.findByMonolithId).toHaveBeenCalledWith(
         "mono-cust-1",
       );
-      expect(mockSubscriptionsService.updatePricing).toHaveBeenCalledWith(
+      expect(mockSubscriptionsService.applyPayrollUpdate).toHaveBeenCalledWith(
         "cust-resolved",
-        75000,
+        [],
         "corr-test",
       );
       expect(mockIdempotencyService.markProcessed).toHaveBeenCalledWith(
@@ -428,24 +431,26 @@ describe("MonolithEventsConsumer", () => {
           monolithCustomerId: "mono-cust-1",
         }),
       );
-      expect(mockSubscriptionsService.updatePricing).not.toHaveBeenCalled();
+      expect(
+        mockSubscriptionsService.applyPayrollUpdate,
+      ).not.toHaveBeenCalled();
       expect(mockIdempotencyService.markProcessed).toHaveBeenCalled();
     });
 
-    it("should handle no active subscriptions — logs warning, no error thrown", async () => {
+    it("should handle no active subscriptions — logs success, no error thrown", async () => {
       mockCustomersService.findByMonolithId.mockResolvedValue({
         id: "cust-resolved",
       });
-      mockSubscriptionsService.updatePricing.mockResolvedValue(0);
+      mockSubscriptionsService.applyPayrollUpdate.mockResolvedValue(0);
 
       const envelope = createEnvelope("payroll.calculated", payrollPayload);
       const message = createSqsMessage(envelope);
 
       await consumer.handleMessage(message);
 
-      expect(warnSpy).toHaveBeenCalledWith(
+      expect(logSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: "No active/paused subscriptions found for pricing update",
+          message: "Payroll pricing and invoice line items updated",
           customerId: "cust-resolved",
         }),
       );
@@ -461,15 +466,17 @@ describe("MonolithEventsConsumer", () => {
       await consumer.handleMessage(message);
 
       expect(mockCustomersService.findByMonolithId).not.toHaveBeenCalled();
-      expect(mockSubscriptionsService.updatePricing).not.toHaveBeenCalled();
+      expect(
+        mockSubscriptionsService.applyPayrollUpdate,
+      ).not.toHaveBeenCalled();
       expect(mockIdempotencyService.markProcessed).not.toHaveBeenCalled();
     });
 
-    it("should NOT mark as processed when updatePricing throws", async () => {
+    it("should NOT mark as processed when applyPayrollUpdate throws", async () => {
       mockCustomersService.findByMonolithId.mockResolvedValue({
         id: "cust-resolved",
       });
-      mockSubscriptionsService.updatePricing.mockRejectedValue(
+      mockSubscriptionsService.applyPayrollUpdate.mockRejectedValue(
         new Error("DB connection error"),
       );
 

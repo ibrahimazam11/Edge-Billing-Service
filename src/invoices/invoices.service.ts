@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  forwardRef,
+} from "@nestjs/common";
 import { DRIZZLE_PROVIDER } from "../database/database.provider";
 import type { DrizzleDatabase } from "../database/types";
 import { LedgerService } from "../ledger/ledger.service";
@@ -27,8 +33,18 @@ import type { ChargeResultDto } from "../charges/dto/charge-result.dto";
 import { InvoicesRepository } from "./invoices.repository";
 import { invoices } from "../database/schema/invoices";
 import { invoiceLineItems } from "../database/schema/invoice-line-items";
+import type { InvoiceCreatePayload } from "../integration/sqs/contracts/inbound-events";
+import type { ResolvedEmployeeLineItem } from "../payroll/payroll-breakdown.resolver";
+import { CustomersService } from "../customers/customers.service";
+import { SurchargeConfigService } from "../surcharges/surcharge-config.service";
+import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
+import { PAYMENT_METHOD_TYPE_CARD } from "../common/constants/payment-method-types";
+import { calculateInvoiceDueDate } from "../common/utils/billing-date.util";
 
 export const CHARGES_SERVICE = Symbol("CHARGES_SERVICE");
+export const SUBSCRIPTIONS_SERVICE_FOR_INVOICES = Symbol(
+  "SUBSCRIPTIONS_SERVICE_FOR_INVOICES",
+);
 
 export interface GenerationResult {
   created: number;
@@ -46,6 +62,8 @@ export class InvoicesService {
     private readonly subscriptionsRepository: SubscriptionsRepository,
     private readonly ledgerService: LedgerService,
     private readonly sqsProducerService: SqsProducerService,
+    @Inject(forwardRef(() => CustomersService))
+    private readonly customersService: CustomersService,
     @Optional() private readonly creditsService?: CreditsService,
     @Optional()
     @Inject(CHARGES_SERVICE)
@@ -57,7 +75,20 @@ export class InvoicesService {
       ) => Promise<ChargeResultDto>;
     },
     @Optional()
+    @Inject(SUBSCRIPTIONS_SERVICE_FOR_INVOICES)
+    private readonly subscriptionsAdvanceService?: {
+      advanceAndSeedNextDraft: (
+        invoiceId: string,
+        correlationId: string,
+      ) => Promise<void>;
+    },
+    @Optional()
     private readonly dualWriteService?: DualWriteService,
+    @Optional()
+    private readonly surchargeConfigService?: SurchargeConfigService,
+    @Optional()
+    @Inject(forwardRef(() => PaymentMethodsService))
+    private readonly paymentMethodsService?: PaymentMethodsService,
   ) {}
 
   async generateInvoicesForDueSubscriptions(
@@ -83,25 +114,67 @@ export class InvoicesService {
 
     for (const subscription of dueSubscriptions) {
       try {
-        const existingInvoice =
+        const existingInvoices =
           await this.invoicesRepository.findDuplicateForSubscription(
             subscription.id,
             subscription.billingPeriodStart,
             subscription.billingPeriodEnd,
           );
 
-        if (existingInvoice.length > 0) {
+        const existingDraft = existingInvoices.find(
+          (inv) => inv.status === "draft" && inv.type === "recurring",
+        );
+        const existingBilled = existingInvoices.find(
+          (inv) => inv.status === "finalized" || inv.status === "paid",
+        );
+        const existingVoid = existingInvoices.find(
+          (inv) => inv.status === "void",
+        );
+
+        if (existingBilled) {
           skipped++;
           this.logger.log({
             message: "Skipping already-invoiced subscription",
             subscriptionId: subscription.id,
+            existingInvoiceId: existingBilled.id,
+            existingStatus: existingBilled.status,
             correlationId,
           });
           continue;
         }
 
-        const { invoice, creditResult } =
-          await this.createInvoiceForSubscription(subscription, correlationId);
+        // A voided invoice for this exact period is an explicit "don't bill"
+        // signal (drafts are voided on pause/cancel). Respect it — do not
+        // silently create a replacement. This state is unreachable in normal
+        // flow (pause/cancel nulls nextBillingDate, resume starts a new
+        // period); reaching it indicates a bug or manual intervention worth
+        // investigating.
+        if (existingVoid && !existingDraft) {
+          skipped++;
+          this.logger.warn({
+            message:
+              "Skipping subscription: voided invoice exists for current period and no active draft — unexpected state",
+            subscriptionId: subscription.id,
+            voidedInvoiceId: existingVoid.id,
+            correlationId,
+          });
+          continue;
+        }
+
+        const { invoice, creditResult } = existingDraft
+          ? await this.finalizeDraftForSubscription(
+              existingDraft,
+              correlationId,
+            )
+          : await this.createInvoiceForSubscription(
+              subscription,
+              correlationId,
+            );
+
+        const invCustomer = await this.customersService.findById(
+          invoice.customerId,
+        );
+        const invMonolithCustomerId = invCustomer?.monolithCustomerId ?? "";
 
         const invDualWriteMetadata =
           await this.dualWriteService?.getDualWriteMetadata(invoice.customerId);
@@ -113,6 +186,7 @@ export class InvoicesService {
               {
                 invoiceId: invoice.id,
                 customerId: invoice.customerId,
+                monolithCustomerId: invMonolithCustomerId,
                 totalAmountCents: 0,
                 currency: invoice.currency,
                 paidAt: new Date().toISOString(),
@@ -140,6 +214,7 @@ export class InvoicesService {
               {
                 invoiceId: invoice.id,
                 customerId: invoice.customerId,
+                monolithCustomerId: invMonolithCustomerId,
                 subscriptionId: invoice.subscriptionId ?? undefined,
                 totalAmountCents: creditResult.newTotal,
                 currency: invoice.currency,
@@ -184,6 +259,30 @@ export class InvoicesService {
           }
         }
 
+        // Advance subscription + seed next-period draft. Runs regardless of
+        // payment outcome — the business requires a standing draft for the
+        // open period so mid-cycle payroll.calculated events have a target.
+        // Failure here must not block the scheduler batch.
+        if (this.subscriptionsAdvanceService) {
+          try {
+            await this.subscriptionsAdvanceService.advanceAndSeedNextDraft(
+              invoice.id,
+              correlationId,
+            );
+          } catch (advanceError) {
+            this.logger.error({
+              message: "Failed to advance subscription and seed next draft",
+              invoiceId: invoice.id,
+              subscriptionId: subscription.id,
+              error:
+                advanceError instanceof Error
+                  ? advanceError.message
+                  : String(advanceError),
+              correlationId,
+            });
+          }
+        }
+
         created++;
       } catch (error) {
         failed++;
@@ -210,10 +309,8 @@ export class InvoicesService {
 
     for (const onboardingInvoice of pendingOnboarding) {
       try {
-        let onboardingCreditResult: CreditApplicationResult = {
-          creditApplied: 0,
-          newTotal: onboardingInvoice.totalAmountCents,
-        };
+        let onboardingCreditApplied = 0;
+        let onboardingFinalTotalCents = onboardingInvoice.totalAmountCents;
 
         await this.db.transaction(async (tx) => {
           validateTransition(
@@ -222,44 +319,62 @@ export class InvoicesService {
             INVOICE_TRANSITIONS,
           );
 
-          await this.invoicesRepository.update(
+          // Strip any draft-time surcharge so we can recompute it on the
+          // post-credit amount.
+          const { removedCents } = await this.stripExistingSurchargeLineItems(
             onboardingInvoice.id,
-            { status: "finalized", updatedAt: new Date() },
             tx,
           );
+          const rawSubtotalCents =
+            onboardingInvoice.totalAmountCents - removedCents;
 
-          await this.ledgerService.recordInvoiceFinalized(
+          const settled = await this.applyCreditsAndSurcharge(
             onboardingInvoice.id,
-            onboardingInvoice.totalAmountCents,
+            onboardingInvoice.customerId,
+            rawSubtotalCents,
             onboardingInvoice.currency,
             correlationId,
             tx,
           );
+          onboardingCreditApplied = settled.creditApplied;
+          onboardingFinalTotalCents = settled.finalTotalCents;
 
-          if (this.creditsService) {
-            onboardingCreditResult =
-              await this.creditsService.applyCreditsToInvoice(
-                onboardingInvoice.id,
-                onboardingInvoice.customerId,
-                onboardingInvoice.totalAmountCents,
-                onboardingInvoice.currency,
-                correlationId,
-                tx,
-              );
+          await this.invoicesRepository.update(
+            onboardingInvoice.id,
+            {
+              totalAmountCents: onboardingFinalTotalCents,
+              status: "finalized",
+              updatedAt: new Date(),
+            },
+            tx,
+          );
 
-            if (onboardingCreditResult.newTotal === 0) {
-              validateTransition(
-                "finalized" as InvoiceStatus,
-                "paid" as InvoiceStatus,
-                INVOICE_TRANSITIONS,
-              );
+          // Skip ledger entry when finalTotal is 0 (createEntry requires
+          // amountCents > 0). Full-credit-coverage invoices have no AR
+          // obligation; the credit_applied entry recorded by
+          // applyCreditsToInvoice is sufficient for audit.
+          if (onboardingFinalTotalCents > 0) {
+            await this.ledgerService.recordInvoiceFinalized(
+              onboardingInvoice.id,
+              onboardingFinalTotalCents,
+              onboardingInvoice.currency,
+              correlationId,
+              tx,
+            );
+          }
 
-              await this.invoicesRepository.update(
-                onboardingInvoice.id,
-                { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-                tx,
-              );
-            }
+          if (onboardingFinalTotalCents === 0) {
+            validateTransition(
+              "finalized" as InvoiceStatus,
+              "paid" as InvoiceStatus,
+              INVOICE_TRANSITIONS,
+            );
+
+            await this.invoicesRepository.update(
+              onboardingInvoice.id,
+              { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+              tx,
+            );
           }
         });
 
@@ -267,24 +382,30 @@ export class InvoicesService {
           message: "Onboarding invoice finalized",
           invoiceId: onboardingInvoice.id,
           customerId: onboardingInvoice.customerId,
-          totalAmountCents: onboardingInvoice.totalAmountCents,
-          creditApplied: onboardingCreditResult.creditApplied,
-          finalTotal: onboardingCreditResult.newTotal,
+          draftTotalAmountCents: onboardingInvoice.totalAmountCents,
+          creditApplied: onboardingCreditApplied,
+          finalTotalCents: onboardingFinalTotalCents,
           correlationId,
         });
+
+        const obCustomer = await this.customersService.findById(
+          onboardingInvoice.customerId,
+        );
+        const obMonolithCustomerId = obCustomer?.monolithCustomerId ?? "";
 
         const obDualWriteMetadata =
           await this.dualWriteService?.getDualWriteMetadata(
             onboardingInvoice.customerId,
           );
 
-        if (onboardingCreditResult.newTotal === 0) {
+        if (onboardingFinalTotalCents === 0) {
           try {
             await this.sqsProducerService.publish(
               "invoice.paid",
               {
                 invoiceId: onboardingInvoice.id,
                 customerId: onboardingInvoice.customerId,
+                monolithCustomerId: obMonolithCustomerId,
                 totalAmountCents: 0,
                 currency: onboardingInvoice.currency,
                 paidAt: new Date().toISOString(),
@@ -365,6 +486,7 @@ export class InvoicesService {
       {
         customerId: query.customerId,
         status: query.status,
+        type: query.type,
         startDate: query.startDate,
         endDate: query.endDate,
         cursor: query.cursor,
@@ -399,6 +521,37 @@ export class InvoicesService {
       cursor: hasMore && lastItem ? lastItem.id : null,
       hasMore,
     };
+  }
+
+  /**
+   * Void any draft invoices for a customer. Called when a subscription is paused/cancelled.
+   * Finalized invoices are intentionally left alone — they represent real debt (payment
+   * may be in-flight, e.g. ACH; dunning may still recover failed charges). Parity with
+   * monolith, which never cancels outstanding invoices on churn.
+   */
+  async voidDraftInvoicesForCustomer(
+    customerId: string,
+    correlationId?: string,
+  ): Promise<number> {
+    const draftInvoice =
+      await this.invoicesRepository.findDraftByCustomerId(customerId);
+    if (!draftInvoice) return 0;
+
+    const now = new Date();
+    await this.invoicesRepository.update(draftInvoice.id, {
+      status: "void",
+      voidedAt: now,
+      updatedAt: now,
+    });
+
+    this.logger.log({
+      message: "Draft invoice voided on subscription pause/cancel",
+      invoiceId: draftInvoice.id,
+      customerId,
+      correlationId,
+    });
+
+    return 1;
   }
 
   async voidInvoice(
@@ -469,6 +622,115 @@ export class InvoicesService {
     return this.toResponseDto(updated, items);
   }
 
+  /**
+   * Finalizes a pre-existing recurring `draft` invoice in place. Used by the
+   * scheduler when a draft already exists for the subscription's current
+   * period — either the one seeded at onboarding via `createFromEvent`, or
+   * the one seeded by `advanceAndSeedNextDraft` at the end of the prior
+   * cycle. Transitions draft → finalized, records the ledger entry, applies
+   * credits. Returns the same `{ invoice, creditResult }` shape as
+   * `createInvoiceForSubscription` so the scheduler's downstream publish +
+   * charge + advance-and-seed logic is origin-agnostic.
+   */
+  private async finalizeDraftForSubscription(
+    draft: typeof invoices.$inferSelect,
+    correlationId: string,
+  ): Promise<{
+    invoice: typeof invoices.$inferSelect;
+    creditResult: CreditApplicationResult;
+  }> {
+    const now = new Date();
+    let creditApplied = 0;
+    let finalTotalCents = draft.totalAmountCents;
+
+    const result = await this.db.transaction(async (tx) => {
+      validateTransition(
+        draft.status as InvoiceStatus,
+        "finalized" as InvoiceStatus,
+        INVOICE_TRANSITIONS,
+      );
+
+      // Strip any draft-time surcharge so we can recompute it on the
+      // post-credit amount. Returns 0 if the draft has no surcharge yet.
+      const { removedCents } = await this.stripExistingSurchargeLineItems(
+        draft.id,
+        tx,
+      );
+      const rawSubtotalCents = draft.totalAmountCents - removedCents;
+
+      const settled = await this.applyCreditsAndSurcharge(
+        draft.id,
+        draft.customerId,
+        rawSubtotalCents,
+        draft.currency,
+        correlationId,
+        tx,
+      );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
+
+      const finalized = await this.invoicesRepository.update(
+        draft.id,
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: now,
+        },
+        tx,
+      );
+
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
+          draft.id,
+          finalTotalCents,
+          draft.currency,
+          correlationId,
+          tx,
+        );
+      }
+
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
+
+        await this.invoicesRepository.update(
+          draft.id,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
+      }
+
+      return finalized ?? draft;
+    });
+
+    this.logger.log({
+      message: "Existing recurring draft finalized in place",
+      invoiceId: draft.id,
+      customerId: draft.customerId,
+      subscriptionId: draft.subscriptionId,
+      draftTotalAmountCents: draft.totalAmountCents,
+      creditApplied,
+      finalTotalCents,
+      correlationId,
+    });
+
+    const adjustedInvoice = {
+      ...result,
+      totalAmountCents: finalTotalCents,
+      ...(finalTotalCents === 0
+        ? { status: "paid" as const, paidAt: new Date() }
+        : {}),
+    };
+
+    return {
+      invoice: adjustedInvoice,
+      creditResult: { creditApplied, newTotal: finalTotalCents },
+    };
+  }
+
   private async createInvoiceForSubscription(
     subscription: typeof subscriptions.$inferSelect,
     correlationId: string,
@@ -477,19 +739,28 @@ export class InvoicesService {
     creditResult: CreditApplicationResult;
   }> {
     const lineItemsData = this.calculateLineItems(subscription);
-    const totalAmountCents = lineItemsData.reduce(
+    const rawSubtotalCents = lineItemsData.reduce(
       (sum, item) => sum + item.amountCents * item.quantity,
       0,
     );
 
     const invoiceId = generateId();
-    const dueDate = new Date(subscription.billingPeriodEnd);
     const now = new Date();
 
-    let creditResult: CreditApplicationResult = {
-      creditApplied: 0,
-      newTotal: totalAmountCents,
-    };
+    // Compute due date from customer's chargeDay / isPrepaid
+    const customer = await this.customersService.findById(
+      subscription.customerId,
+    );
+    const chargeDay = customer?.chargeDay ?? 15;
+    const isPrepaid = customer?.isPrepaid ?? true;
+    const dueDate = calculateInvoiceDueDate(
+      subscription.billingPeriodStart,
+      chargeDay,
+      isPrepaid,
+    );
+
+    let creditApplied = 0;
+    let finalTotalCents = rawSubtotalCents;
 
     const result = await this.db.transaction(async (tx) => {
       const created = await this.invoicesRepository.create(
@@ -497,6 +768,7 @@ export class InvoicesService {
           id: invoiceId,
           customerId: subscription.customerId,
           subscriptionId: subscription.id,
+          type: "recurring",
           status: "draft",
           totalAmountCents: 0,
           currency: subscription.currency,
@@ -525,6 +797,19 @@ export class InvoicesService {
         );
       }
 
+      // Apply credits against rawSubtotal, then compute surcharge on the
+      // post-credit amount. See applyCreditsAndSurcharge for rationale.
+      const settled = await this.applyCreditsAndSurcharge(
+        invoiceId,
+        subscription.customerId,
+        rawSubtotalCents,
+        subscription.currency,
+        correlationId,
+        tx,
+      );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
+
       validateTransition(
         "draft" as InvoiceStatus,
         "finalized" as InvoiceStatus,
@@ -533,41 +818,36 @@ export class InvoicesService {
 
       const finalized = await this.invoicesRepository.update(
         invoiceId,
-        { totalAmountCents, status: "finalized", updatedAt: now },
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: now,
+        },
         tx,
       );
 
-      await this.ledgerService.recordInvoiceFinalized(
-        invoiceId,
-        totalAmountCents,
-        subscription.currency,
-        correlationId,
-        tx,
-      );
-
-      if (this.creditsService) {
-        creditResult = await this.creditsService.applyCreditsToInvoice(
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
           invoiceId,
-          subscription.customerId,
-          totalAmountCents,
+          finalTotalCents,
           subscription.currency,
           correlationId,
           tx,
         );
+      }
 
-        if (creditResult.newTotal === 0) {
-          validateTransition(
-            "finalized" as InvoiceStatus,
-            "paid" as InvoiceStatus,
-            INVOICE_TRANSITIONS,
-          );
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
 
-          await this.invoicesRepository.update(
-            invoiceId,
-            { status: "paid", paidAt: new Date(), updatedAt: new Date() },
-            tx,
-          );
-        }
+        await this.invoicesRepository.update(
+          invoiceId,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
       }
 
       return finalized ?? created;
@@ -578,24 +858,439 @@ export class InvoicesService {
       invoiceId,
       subscriptionId: subscription.id,
       customerId: subscription.customerId,
-      totalAmountCents,
-      creditApplied: creditResult.creditApplied,
-      finalTotal: creditResult.newTotal,
+      rawSubtotalCents,
+      creditApplied,
+      finalTotalCents,
       correlationId,
     });
 
     const adjustedInvoice =
-      creditResult.creditApplied > 0
+      creditApplied > 0 || finalTotalCents !== rawSubtotalCents
         ? {
             ...result,
-            totalAmountCents: creditResult.newTotal,
-            ...(creditResult.newTotal === 0
+            totalAmountCents: finalTotalCents,
+            ...(finalTotalCents === 0
               ? { status: "paid" as const, paidAt: new Date() }
               : {}),
           }
         : result;
 
-    return { invoice: adjustedInvoice, creditResult };
+    return {
+      invoice: adjustedInvoice,
+      creditResult: { creditApplied, newTotal: finalTotalCents },
+    };
+  }
+
+  /**
+   * Creates a standalone invoice from an inbound event (onboarding, one_time).
+   * Not linked to a subscription — independent one-time charge.
+   * If dueDate <= now, finalizes and charges immediately.
+   */
+  async createFromEvent(
+    payload: InvoiceCreatePayload,
+    billingCustomerId: string,
+    correlationId: string,
+  ): Promise<string> {
+    const now = new Date();
+    const dueDate = new Date(payload.dueDate);
+
+    // Extract per-item breakdowns from metadata (one-time charges send full item data)
+    const metadata = payload.metadata as Record<string, unknown> | null;
+    const itemBreakdowns = metadata?.items as
+      | Record<string, unknown>[]
+      | undefined;
+
+    const lineItems = payload.lineItems.map((item, index) => ({
+      type: payload.type,
+      description: item.description,
+      amountCents: item.amountCents,
+      quantity: 1,
+      breakdown:
+        (itemBreakdowns?.[index] as
+          | Record<string, number | string>
+          | undefined) ?? null,
+    }));
+
+    const invoiceId = await this.createDraftInvoice(
+      {
+        customerId: billingCustomerId,
+        subscriptionId: null,
+        type: payload.type,
+        lineItems,
+        totalAmountCents: payload.totalAmountCents,
+        currency: payload.currency ?? "usd",
+        billingPeriodStart: now,
+        billingPeriodEnd: now,
+        dueDate,
+        metadata: null,
+      },
+      correlationId,
+    );
+
+    this.logger.log({
+      message: "Standalone invoice created from event",
+      invoiceId,
+      customerId: billingCustomerId,
+      type: payload.type,
+      totalAmountCents: payload.totalAmountCents,
+      chargeImmediately: dueDate <= now,
+      correlationId,
+    });
+
+    if (dueDate <= now) {
+      await this.finalizeAndCharge(invoiceId, correlationId);
+    }
+
+    return invoiceId;
+  }
+
+  /**
+   * Creates a draft invoice with line items. Used by SubscriptionsService for
+   * first monthly invoices, and by createFromEvent for standalone invoices.
+   */
+  async createDraftInvoice(
+    params: {
+      customerId: string;
+      subscriptionId: string | null;
+      type: "onboarding" | "one_time" | "recurring";
+      lineItems: Array<{
+        type: string;
+        description: string;
+        amountCents: number;
+        quantity: number;
+        breakdown?: Record<string, number | string> | null;
+      }>;
+      totalAmountCents: number;
+      currency: string;
+      billingPeriodStart: Date;
+      billingPeriodEnd: Date;
+      dueDate: Date;
+      metadata?: Record<string, unknown> | null;
+    },
+    correlationId: string,
+  ): Promise<string> {
+    const invoiceId = generateId();
+    const now = new Date();
+
+    // Calculate surcharge on raw subtotal before persisting
+    const allLineItems = [...params.lineItems];
+    let adjustedTotal = params.totalAmountCents;
+
+    const surcharge = await this.calculateSurcharge(
+      params.customerId,
+      params.totalAmountCents,
+    );
+    if (surcharge) {
+      allLineItems.push({
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+      });
+      adjustedTotal += surcharge.amountCents;
+    }
+
+    await this.db.transaction(async (tx) => {
+      await this.invoicesRepository.create(
+        {
+          id: invoiceId,
+          customerId: params.customerId,
+          subscriptionId: params.subscriptionId,
+          type: params.type,
+          status: "draft",
+          totalAmountCents: adjustedTotal,
+          currency: params.currency,
+          billingPeriodStart: params.billingPeriodStart,
+          billingPeriodEnd: params.billingPeriodEnd,
+          dueDate: params.dueDate,
+          metadata: params.metadata ?? null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        tx,
+      );
+
+      if (allLineItems.length > 0) {
+        const lineItemRows = allLineItems.map((item) => ({
+          id: generateId(),
+          invoiceId,
+          type: item.type,
+          description: item.description,
+          amountCents: item.amountCents,
+          quantity: item.quantity,
+          breakdown: item.breakdown ?? null,
+          createdAt: now,
+        }));
+
+        await this.invoicesRepository.createLineItems(lineItemRows, tx);
+      }
+    });
+
+    this.logger.log({
+      message: "Draft invoice created",
+      invoiceId,
+      customerId: params.customerId,
+      subscriptionId: params.subscriptionId,
+      totalAmountCents: params.totalAmountCents,
+      lineItemCount: params.lineItems.length,
+      correlationId,
+    });
+
+    return invoiceId;
+  }
+
+  /**
+   * Finalizes a draft invoice (applies credits) and attempts payment.
+   * Used for onboarding invoices that are due immediately.
+   */
+  async finalizeAndCharge(
+    invoiceId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const result =
+      await this.invoicesRepository.findByIdWithLineItems(invoiceId);
+    if (!result) {
+      throw new InvoiceNotFoundException(invoiceId);
+    }
+
+    const { invoice } = result;
+
+    let creditApplied = 0;
+    let finalTotalCents = invoice.totalAmountCents;
+
+    await this.db.transaction(async (tx) => {
+      validateTransition(
+        invoice.status as InvoiceStatus,
+        "finalized" as InvoiceStatus,
+        INVOICE_TRANSITIONS,
+      );
+
+      // Strip any draft-time surcharge so we can recompute it on the
+      // post-credit amount.
+      const { removedCents } = await this.stripExistingSurchargeLineItems(
+        invoiceId,
+        tx,
+      );
+      const rawSubtotalCents = invoice.totalAmountCents - removedCents;
+
+      const settled = await this.applyCreditsAndSurcharge(
+        invoiceId,
+        invoice.customerId,
+        rawSubtotalCents,
+        invoice.currency,
+        correlationId,
+        tx,
+      );
+      creditApplied = settled.creditApplied;
+      finalTotalCents = settled.finalTotalCents;
+
+      await this.invoicesRepository.update(
+        invoiceId,
+        {
+          totalAmountCents: finalTotalCents,
+          status: "finalized",
+          updatedAt: new Date(),
+        },
+        tx,
+      );
+
+      if (finalTotalCents > 0) {
+        await this.ledgerService.recordInvoiceFinalized(
+          invoiceId,
+          finalTotalCents,
+          invoice.currency,
+          correlationId,
+          tx,
+        );
+      }
+
+      if (finalTotalCents === 0) {
+        validateTransition(
+          "finalized" as InvoiceStatus,
+          "paid" as InvoiceStatus,
+          INVOICE_TRANSITIONS,
+        );
+
+        await this.invoicesRepository.update(
+          invoiceId,
+          { status: "paid", paidAt: new Date(), updatedAt: new Date() },
+          tx,
+        );
+      }
+    });
+
+    this.logger.log({
+      message: "Invoice finalized",
+      invoiceId,
+      draftTotalAmountCents: invoice.totalAmountCents,
+      creditApplied,
+      finalTotalCents,
+      correlationId,
+    });
+
+    if (finalTotalCents > 0 && this.chargesService) {
+      try {
+        await this.chargesService.executePaymentForInvoice(
+          invoiceId,
+          correlationId,
+        );
+      } catch (paymentError) {
+        this.logger.warn({
+          message: "Payment execution failed after finalization",
+          invoiceId,
+          error:
+            paymentError instanceof Error
+              ? paymentError.message
+              : String(paymentError),
+          correlationId,
+        });
+      }
+    }
+  }
+
+  async findOpenRecurringDraft(customerId: string) {
+    return this.invoicesRepository.findOpenRecurringDraft(customerId);
+  }
+
+  /**
+   * Returns true when a draft recurring invoice already exists for the given
+   * subscription+period. Used by `advanceAndSeedNextDraft` as a belt-and-
+   * suspenders guard: even if the subscription-period idempotency check
+   * passes, we never seed a second draft for a period that already has one.
+   */
+  async draftExistsForSubscriptionPeriod(
+    subscriptionId: string,
+    periodStart: Date,
+    periodEnd: Date,
+  ): Promise<boolean> {
+    const rows = await this.invoicesRepository.findDuplicateForSubscription(
+      subscriptionId,
+      periodStart,
+      periodEnd,
+    );
+    return rows.some(
+      (inv) => inv.status === "draft" && inv.type === "recurring",
+    );
+  }
+
+  async updateOpenInvoiceLineItems(
+    customerId: string,
+    employees: ResolvedEmployeeLineItem[],
+    totalAmountCents: number,
+    correlationId: string,
+  ): Promise<void> {
+    // Payroll resolution may only mutate the open recurring draft. Onboarding,
+    // one-time, finalized, paid, and voided invoices are immutable from this path.
+    const openInvoice =
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
+
+    if (!openInvoice) {
+      this.logger.warn({
+        message: "No open recurring draft found for line item update; no-op",
+        customerId,
+        correlationId,
+      });
+      return;
+    }
+
+    // Defense in depth: if the repository contract is ever loosened, refuse to
+    // mutate anything that isn't a recurring draft.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to update line items: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
+
+    // Surface upstream invariant break: more than one open recurring draft.
+    // Fail closed — mutating only one of N leaves the others stale and a later
+    // finalize-by-oldest path could charge an outdated total. Operator must
+    // resolve the anomaly (void duplicates) before payroll updates resume.
+    const draftCount =
+      await this.invoicesRepository.countOpenRecurringDrafts(customerId);
+    if (draftCount > 1) {
+      this.logger.error({
+        message:
+          "Multiple open recurring drafts detected for customer — refusing to mutate; resolve duplicates manually",
+        customerId,
+        candidateInvoiceId: openInvoice.id,
+        draftCount,
+        correlationId,
+      });
+      return;
+    }
+
+    const now = new Date();
+
+    // Build one line item per employee with breakdown in JSONB
+    const newLineItems = employees.map((emp) => ({
+      id: generateId(),
+      invoiceId: openInvoice.id,
+      type: "employee_cost",
+      description: emp.employeeName,
+      amountCents: emp.customerCost,
+      quantity: 1,
+      breakdown: {
+        employeeId: emp.employeeId,
+        salary: emp.salary,
+        platformFee: emp.platformFee,
+        bonus: emp.bonus,
+        raise: emp.raise,
+        discount: emp.discount,
+      },
+      createdAt: now,
+    }));
+
+    // Calculate surcharge on the employee subtotal
+    let adjustedTotal = totalAmountCents;
+    const surcharge = await this.calculateSurcharge(
+      customerId,
+      totalAmountCents,
+    );
+    if (surcharge) {
+      newLineItems.push({
+        id: generateId(),
+        invoiceId: openInvoice.id,
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+        breakdown: {} as (typeof newLineItems)[0]["breakdown"],
+        createdAt: now,
+      });
+      adjustedTotal += surcharge.amountCents;
+    }
+
+    await this.db.transaction(async (tx) => {
+      await this.invoicesRepository.deleteLineItemsByInvoiceId(
+        openInvoice.id,
+        tx,
+      );
+
+      await this.invoicesRepository.createLineItems(newLineItems, tx);
+
+      await this.invoicesRepository.update(
+        openInvoice.id,
+        { totalAmountCents: adjustedTotal, updatedAt: now },
+        tx,
+      );
+    });
+
+    this.logger.log({
+      message: "Open invoice line items updated",
+      invoiceId: openInvoice.id,
+      customerId,
+      employeeCount: employees.length,
+      totalAmountCents: adjustedTotal,
+      surchargeAmountCents: surcharge?.amountCents ?? 0,
+      correlationId,
+    });
   }
 
   private calculateLineItems(
@@ -626,6 +1321,7 @@ export class InvoicesService {
       id: invoice.id,
       customerId: invoice.customerId,
       subscriptionId: invoice.subscriptionId,
+      type: invoice.type,
       status: invoice.status,
       totalAmountCents: invoice.totalAmountCents,
       currency: invoice.currency,
@@ -651,7 +1347,220 @@ export class InvoicesService {
       description: item.description,
       amountCents: item.amountCents,
       quantity: item.quantity,
+      breakdown: item.breakdown as Record<string, number> | null,
       createdAt: item.createdAt.toISOString(),
     };
+  }
+
+  /**
+   * Defensively removes any pre-existing `surcharge` line items on an invoice
+   * within the given transaction, returning their summed amount. Used by finalize
+   * paths to strip the draft-time surcharge so a fresh, post-credit-correct
+   * surcharge can be inserted by `applyCreditsAndSurcharge`. Also self-heals
+   * stale drafts created before this change was deployed.
+   */
+  private async stripExistingSurchargeLineItems(
+    invoiceId: string,
+    tx: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<{ removedCents: number }> {
+    const items = await this.invoicesRepository.getLineItemsByInvoiceId(
+      invoiceId,
+      tx,
+    );
+    const removedCents = items
+      .filter((li) => li.type === "surcharge")
+      .reduce((sum, li) => sum + li.amountCents * li.quantity, 0);
+
+    if (removedCents > 0) {
+      await this.invoicesRepository.deleteLineItemsByInvoiceIdAndType(
+        invoiceId,
+        "surcharge",
+        tx,
+      );
+    }
+    return { removedCents };
+  }
+
+  /**
+   * Finalize-time helper: applies credits against the raw subtotal, then
+   * computes credit-card surcharge on the post-credit amount and inserts a
+   * fresh `surcharge` line item if applicable. Returns the chargeable
+   * `finalTotalCents` so the caller can update the invoice + ledger with the
+   * correct amount.
+   *
+   * Why this ordering: credits should reduce what the customer is actually
+   * being asked to pay, and surcharge applies only to that residual cash.
+   * Computing surcharge on the pre-credit subtotal would charge a percentage
+   * of an amount the customer is not paying.
+   */
+  private async applyCreditsAndSurcharge(
+    invoiceId: string,
+    customerId: string,
+    rawSubtotalCents: number,
+    currency: string,
+    correlationId: string,
+    tx: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<{
+    creditApplied: number;
+    surchargeCents: number;
+    finalTotalCents: number;
+  }> {
+    const creditResult: CreditApplicationResult = this.creditsService
+      ? await this.creditsService.applyCreditsToInvoice(
+          invoiceId,
+          customerId,
+          rawSubtotalCents,
+          currency,
+          correlationId,
+          tx,
+        )
+      : { creditApplied: 0, newTotal: rawSubtotalCents };
+
+    // postCredit guard: covers the flat-fee surcharge edge case where
+    // calculateSurcharge would otherwise return a positive amount even when
+    // the customer owes $0 in cash after credits.
+    if (creditResult.newTotal <= 0) {
+      return {
+        creditApplied: creditResult.creditApplied,
+        surchargeCents: 0,
+        finalTotalCents: creditResult.newTotal,
+      };
+    }
+
+    const surcharge = await this.calculateSurcharge(
+      customerId,
+      creditResult.newTotal,
+    );
+    if (!surcharge) {
+      return {
+        creditApplied: creditResult.creditApplied,
+        surchargeCents: 0,
+        finalTotalCents: creditResult.newTotal,
+      };
+    }
+
+    await this.invoicesRepository.createLineItem(
+      {
+        id: generateId(),
+        invoiceId,
+        type: "surcharge",
+        description: surcharge.description,
+        amountCents: surcharge.amountCents,
+        quantity: 1,
+        createdAt: new Date(),
+      },
+      tx,
+    );
+
+    return {
+      creditApplied: creditResult.creditApplied,
+      surchargeCents: surcharge.amountCents,
+      finalTotalCents: creditResult.newTotal + surcharge.amountCents,
+    };
+  }
+
+  private async calculateSurcharge(
+    customerId: string,
+    subtotalCents: number,
+  ): Promise<{ amountCents: number; description: string } | null> {
+    if (!this.paymentMethodsService || !this.surchargeConfigService)
+      return null;
+
+    const defaultPm =
+      await this.paymentMethodsService.getDefaultPaymentMethod(customerId);
+    if (!defaultPm || defaultPm.type !== PAYMENT_METHOD_TYPE_CARD) return null;
+
+    const config = await this.surchargeConfigService.getConfig(customerId);
+    if (!config || !config.surchargeType || !config.surchargeValue) return null;
+
+    let amountCents: number;
+    if (config.surchargeType === "percentage") {
+      amountCents = Math.round((subtotalCents * config.surchargeValue) / 100);
+    } else {
+      // flat_fee: surchargeValue is in dollars, convert to cents
+      amountCents = config.surchargeValue * 100;
+    }
+
+    if (amountCents <= 0) return null;
+
+    return { amountCents, description: "Credit card surcharge" };
+  }
+
+  async recalculateSurchargeOnOpenInvoice(
+    customerId: string,
+    correlationId: string,
+  ): Promise<void> {
+    // Surcharge only applies to the open recurring draft. Finalized/paid
+    // invoices have already-locked surcharge; onboarding/one-time use a
+    // separate fee model.
+    const openInvoice =
+      await this.invoicesRepository.findOpenRecurringDraft(customerId);
+    if (!openInvoice) return;
+
+    // Defense in depth: refuse to mutate anything that isn't a recurring draft,
+    // even if the repository contract is ever loosened.
+    if (openInvoice.status !== "draft" || openInvoice.type !== "recurring") {
+      this.logger.error({
+        message:
+          "Refusing to recalculate surcharge: invoice is not a recurring draft",
+        customerId,
+        invoiceId: openInvoice.id,
+        invoiceStatus: openInvoice.status,
+        invoiceType: openInvoice.type,
+        correlationId,
+      });
+      return;
+    }
+
+    const items = await this.invoicesRepository.getLineItemsByInvoiceId(
+      openInvoice.id,
+    );
+    const nonSurchargeItems = items.filter((i) => i.type !== "surcharge");
+    const subtotalCents = nonSurchargeItems.reduce(
+      (sum, i) => sum + i.amountCents * i.quantity,
+      0,
+    );
+
+    const surcharge = await this.calculateSurcharge(customerId, subtotalCents);
+    const newTotal = subtotalCents + (surcharge?.amountCents ?? 0);
+
+    await this.db.transaction(async (tx) => {
+      await this.invoicesRepository.deleteLineItemsByInvoiceIdAndType(
+        openInvoice.id,
+        "surcharge",
+        tx,
+      );
+
+      if (surcharge) {
+        await this.invoicesRepository.createLineItem(
+          {
+            id: generateId(),
+            invoiceId: openInvoice.id,
+            type: "surcharge",
+            description: surcharge.description,
+            amountCents: surcharge.amountCents,
+            quantity: 1,
+            createdAt: new Date(),
+          },
+          tx,
+        );
+      }
+
+      await this.invoicesRepository.update(
+        openInvoice.id,
+        { totalAmountCents: newTotal, updatedAt: new Date() },
+        tx,
+      );
+    });
+
+    this.logger.log({
+      message: "Surcharge recalculated on open invoice",
+      invoiceId: openInvoice.id,
+      customerId,
+      subtotalCents,
+      surchargeAmountCents: surcharge?.amountCents ?? 0,
+      newTotal,
+      correlationId,
+    });
   }
 }

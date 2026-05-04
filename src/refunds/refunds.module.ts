@@ -16,7 +16,7 @@ import { PaymentMethodsModule } from "../payment-methods/payment-methods.module"
     LedgerModule,
     forwardRef(() => SqsIntegrationModule),
     ChargesModule,
-    PaymentMethodsModule,
+    forwardRef(() => PaymentMethodsModule),
   ],
   controllers: [RefundsController],
   providers: [RefundsService, RefundsRepository],

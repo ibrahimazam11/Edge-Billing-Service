@@ -3,6 +3,8 @@ import {
   uuid,
   text,
   varchar,
+  integer,
+  boolean,
   jsonb,
   timestamp,
   uniqueIndex,
@@ -18,6 +20,8 @@ export const customers = pgTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     status: varchar("status", { length: 20 }).notNull().default("active"),
+    chargeDay: integer("charge_day").notNull().default(1),
+    isPrepaid: boolean("is_prepaid").notNull().default(true),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

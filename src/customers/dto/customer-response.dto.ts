@@ -1,4 +1,11 @@
-import { IsString, IsOptional, IsDateString, IsObject } from "class-validator";
+import {
+  IsString,
+  IsOptional,
+  IsDateString,
+  IsObject,
+  IsInt,
+  IsBoolean,
+} from "class-validator";
 
 export class CustomerResponseDto {
   @IsString()
@@ -19,6 +26,12 @@ export class CustomerResponseDto {
 
   @IsString()
   status!: string;
+
+  @IsInt()
+  chargeDay!: number;
+
+  @IsBoolean()
+  isPrepaid!: boolean;
 
   @IsOptional()
   @IsObject()

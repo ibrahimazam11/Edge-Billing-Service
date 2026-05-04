@@ -5,5 +5,6 @@ export class InvoiceLineItemResponseDto {
   description!: string;
   amountCents!: number;
   quantity!: number;
+  breakdown!: Record<string, number> | null;
   createdAt!: string;
 }

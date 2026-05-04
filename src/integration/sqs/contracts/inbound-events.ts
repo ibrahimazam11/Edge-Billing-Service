@@ -2,6 +2,8 @@ export interface CustomerCreatedPayload {
   monolithCustomerId: string;
   name: string;
   email: string;
+  chargeDay?: number;
+  isPrepaid?: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -12,11 +14,34 @@ export interface CustomerUpdatedPayload {
   metadata?: Record<string, unknown>;
 }
 
+export interface RawDiscountConfigPayload {
+  isDiscountedEmployee: boolean;
+  flatRateCents: number;
+  percentage: number;
+  startDate: string | null;
+  durationMonths: number | null;
+}
+
+export interface RawPayrollEmployeeBonusPayload {
+  bonusMonth: string;
+  bonusCents: number;
+  incrementAmountCents: number;
+  createdAt: string;
+}
+
+export interface RawPayrollEmployeePayload {
+  employeeId: string;
+  employeeName: string;
+  salaryCents: number;
+  platformFeeCents: number;
+  discountConfig: RawDiscountConfigPayload | null;
+  bonuses: RawPayrollEmployeeBonusPayload[];
+}
+
 export interface PayrollCalculatedPayload {
   monolithCustomerId: string;
-  amountCents: number;
   currency: string;
-  calculationDate: string;
+  employees: RawPayrollEmployeePayload[];
 }
 
 export interface StripeWebhookReceivedPayload {
@@ -30,6 +55,42 @@ export interface AdyenWebhookReceivedPayload {
   adyenEventId: string;
   rawPayload: string;
   headers: Record<string, string>;
+}
+
+export interface InvoiceLineItemPayload {
+  description: string;
+  amountCents: number;
+}
+
+export type InvoiceType = "onboarding" | "one_time";
+
+export interface InvoiceCreatePayload {
+  monolithCustomerId: string;
+  type: InvoiceType;
+  currency: string;
+  totalAmountCents: number;
+  lineItems: InvoiceLineItemPayload[];
+  dueDate: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SubscriptionCreatePayload {
+  monolithCustomerId: string;
+  planName: string;
+  amountCents: number;
+  currency: string;
+  billingInterval: string;
+  billingStartDate: string;
+  onboardingDate: string;
+  /** Raw employee state for first monthly invoice — avoids race with payroll.calculated */
+  employees?: RawPayrollEmployeePayload[];
+}
+
+export interface SurchargeConfigUpdatedPayload {
+  monolithCustomerId: string;
+  allowCreditCard: boolean;
+  surchargeType: "percentage" | "flat_fee" | null;
+  surchargeValue: number | null;
 }
 
 export interface BillingScheduleGenerateInvoicesPayload {
@@ -49,7 +110,10 @@ export interface BillingScheduleDailyReconciliationPayload {
 export interface InboundEventMap {
   "customer.created": CustomerCreatedPayload;
   "customer.updated": CustomerUpdatedPayload;
+  "invoice.create": InvoiceCreatePayload;
   "payroll.calculated": PayrollCalculatedPayload;
+  "subscription.create": SubscriptionCreatePayload;
+  "surcharge-config.updated": SurchargeConfigUpdatedPayload;
   "stripe.webhook.received": StripeWebhookReceivedPayload;
   "adyen.webhook.received": AdyenWebhookReceivedPayload;
   "billing.schedule.generate-invoices": BillingScheduleGenerateInvoicesPayload;

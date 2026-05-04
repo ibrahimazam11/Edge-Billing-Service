@@ -5,6 +5,9 @@ import { SubscriptionsRepository } from "./subscriptions.repository";
 import { CustomersService } from "../customers/customers.service";
 import { PaymentMethodsService } from "../payment-methods/payment-methods.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
+import { InvoicesService } from "../invoices/invoices.service";
+import { MonolithApiService } from "../integration/monolith-api/monolith-api.service";
+import { PayrollBreakdownResolver } from "../payroll/payroll-breakdown.resolver";
 import { CustomerNotFoundException } from "../common/exceptions/customer-not-found.exception";
 import { SubscriptionNotFoundException } from "../common/exceptions/subscription-not-found.exception";
 import { NoPaymentMethodException } from "../common/exceptions/no-payment-method.exception";
@@ -38,6 +41,25 @@ const mockSqsProducerService = {
   publish: jest.fn().mockResolvedValue(undefined),
 };
 
+const mockInvoicesService = {
+  findOpenRecurringDraft: jest.fn().mockResolvedValue(null),
+  createDraftInvoice: jest.fn().mockResolvedValue(undefined),
+  updateOpenInvoiceLineItems: jest.fn().mockResolvedValue(undefined),
+  voidDraftInvoicesForCustomer: jest.fn().mockResolvedValue(0),
+  findById: jest.fn().mockResolvedValue(null),
+  draftExistsForSubscriptionPeriod: jest.fn().mockResolvedValue(false),
+};
+
+const mockMonolithApiService = {
+  getPayrollBreakdown: jest.fn().mockResolvedValue({
+    employees: [],
+  }),
+};
+
+const mockPayrollResolver = {
+  resolve: jest.fn().mockReturnValue({ employees: [], totalAmountCents: 0 }),
+};
+
 const mockCustomer = {
   id: "cust-123",
   monolithCustomerId: "mono-123",
@@ -45,6 +67,8 @@ const mockCustomer = {
   name: "Test Customer",
   email: "test@example.com",
   status: "active",
+  chargeDay: 15,
+  isPrepaid: true,
   metadata: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -106,6 +130,9 @@ describe("SubscriptionsService", () => {
         { provide: CustomersService, useValue: mockCustomersService },
         { provide: PaymentMethodsService, useValue: mockPaymentMethodsService },
         { provide: SqsProducerService, useValue: mockSqsProducerService },
+        { provide: InvoicesService, useValue: mockInvoicesService },
+        { provide: MonolithApiService, useValue: mockMonolithApiService },
+        { provide: PayrollBreakdownResolver, useValue: mockPayrollResolver },
       ],
     }).compile();
 
@@ -221,8 +248,8 @@ describe("SubscriptionsService", () => {
       expect(createCall.billingInterval).toBe("monthly");
     });
 
-    it("should set next_billing_date equal to billing_period_end", async () => {
-      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+    it("should set next_billing_date to invoice due date based on chargeDay", async () => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer); // chargeDay=15, isPrepaid=true
       mockPaymentMethodsService.findAll.mockResolvedValue({
         data: [mockPaymentMethod],
         cursor: null,
@@ -230,11 +257,14 @@ describe("SubscriptionsService", () => {
       });
       mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
 
-      await service.create(createDto);
+      await service.create(createDto); // billingStartDate = 2026-03-01
 
       const createCall = mockSubscriptionsRepo.create.mock
         .calls[0][0] as Record<string, unknown>;
-      expect(createCall.nextBillingDate).toEqual(createCall.billingPeriodEnd);
+      // chargeDay=15, prepaid, billingStart=March 1 → dueDate = March 15
+      expect(createCall.nextBillingDate).toEqual(
+        new Date("2026-03-15T00:00:00.000Z"),
+      );
     });
   });
 
@@ -540,7 +570,7 @@ describe("SubscriptionsService", () => {
       expect(updateCall.status).toBe("canceled");
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
-      expect(updateCall.nextBillingDate).toBeUndefined();
+      expect(updateCall.nextBillingDate).toBeNull();
     });
 
     it("should publish subscription.state.changed event after DB update", async () => {
@@ -693,6 +723,322 @@ describe("SubscriptionsService", () => {
         .calls[0][1] as Record<string, unknown>;
       const newStart = updateCall.billingPeriodStart as Date;
       expect(newStart.toISOString()).toBe("2026-04-01T00:00:00.000Z");
+    });
+  });
+
+  describe("advanceAndSeedNextDraft", () => {
+    const finalizedInvoice = {
+      id: "inv-1",
+      customerId: "cust-123",
+      subscriptionId: "sub-123",
+      type: "recurring",
+      status: "finalized",
+      totalAmountCents: 5200,
+      currency: "usd",
+      billingPeriodStart: "2026-03-01T00:00:00.000Z",
+      billingPeriodEnd: "2026-04-01T00:00:00.000Z",
+      dueDate: "2026-03-01T00:00:00.000Z",
+      paidAt: null,
+      voidedAt: null,
+      metadata: null,
+      lineItems: [
+        {
+          id: "li-1",
+          invoiceId: "inv-1",
+          type: "employee_cost",
+          description: "Alice",
+          amountCents: 2500,
+          quantity: 1,
+          breakdown: {
+            employeeId: "emp-1",
+            salary: 2000,
+            platformFee: 300,
+            bonus: 200,
+            raise: 0,
+            discount: 0,
+          },
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+        {
+          id: "li-2",
+          invoiceId: "inv-1",
+          type: "employee_cost",
+          description: "Bob",
+          amountCents: 2500,
+          quantity: 1,
+          breakdown: {
+            employeeId: "emp-2",
+            salary: 2000,
+            platformFee: 300,
+            bonus: 0,
+            raise: 200,
+            discount: 0,
+          },
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+        {
+          id: "li-3",
+          invoiceId: "inv-1",
+          type: "surcharge",
+          description: "Credit card surcharge",
+          amountCents: 200,
+          quantity: 1,
+          breakdown: null,
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+      ],
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    };
+
+    const advancedRow = {
+      ...mockSubscriptionRow,
+      billingPeriodStart: new Date("2026-04-01T00:00:00.000Z"),
+      billingPeriodEnd: new Date("2026-05-01T00:00:00.000Z"),
+      nextBillingDate: new Date("2026-05-01T00:00:00.000Z"),
+    };
+
+    // Monolith now returns RAW shape; the resolver transforms it into the
+    // resolved breakdown. We stub both the HTTP and the resolver.
+    const freshPayrollRawFromMonolith = {
+      employees: [
+        {
+          employeeId: "emp-1",
+          employeeName: "Alice",
+          salaryCents: 2100,
+          platformFeeCents: 300,
+          discountConfig: null,
+          bonuses: [],
+        },
+        {
+          employeeId: "emp-2",
+          employeeName: "Bob",
+          salaryCents: 2000,
+          platformFeeCents: 300,
+          discountConfig: null,
+          bonuses: [],
+        },
+      ],
+    };
+
+    const resolvedFresh = {
+      employees: [
+        {
+          employeeId: "emp-1",
+          employeeName: "Alice",
+          customerCost: 2400,
+          salary: 2100,
+          platformFee: 300,
+          bonus: 0,
+          raise: 0,
+          discount: 0,
+        },
+        {
+          employeeId: "emp-2",
+          employeeName: "Bob",
+          customerCost: 2300,
+          salary: 2000,
+          platformFee: 300,
+          bonus: 0,
+          raise: 0,
+          discount: 0,
+        },
+      ],
+      totalAmountCents: 4700,
+    };
+
+    beforeEach(() => {
+      mockInvoicesService.findById.mockResolvedValue(finalizedInvoice);
+      mockSubscriptionsRepo.findById.mockResolvedValue(mockSubscriptionRow);
+      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+      mockSubscriptionsRepo.update.mockResolvedValue(advancedRow);
+      mockInvoicesService.createDraftInvoice.mockResolvedValue("new-draft-id");
+      mockMonolithApiService.getPayrollBreakdown.mockResolvedValue(
+        freshPayrollRawFromMonolith,
+      );
+      mockPayrollResolver.resolve.mockReturnValue(resolvedFresh);
+    });
+
+    it("should advance subscription and seed new draft with fresh payroll from monolith", async () => {
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      // Advance was called
+      expect(mockSubscriptionsRepo.update).toHaveBeenCalledWith(
+        "sub-123",
+        expect.objectContaining({
+          billingPeriodStart: new Date("2026-04-01T00:00:00.000Z"),
+          billingPeriodEnd: new Date("2026-05-01T00:00:00.000Z"),
+        }),
+      );
+
+      // Fresh payroll was fetched (no cycle args; BS resolves cycle locally)
+      expect(mockMonolithApiService.getPayrollBreakdown).toHaveBeenCalledWith(
+        "mono-123",
+      );
+
+      // Resolver was called with the advanced cycle's start
+      expect(mockPayrollResolver.resolve).toHaveBeenCalledWith(
+        { employees: freshPayrollRawFromMonolith.employees },
+        new Date("2026-04-01T00:00:00.000Z"),
+      );
+
+      // New draft uses monolith's totalAmountCents, not a recomputed sum
+      expect(mockInvoicesService.createDraftInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customerId: "cust-123",
+          subscriptionId: "sub-123",
+          type: "recurring",
+          billingPeriodStart: new Date("2026-04-01T00:00:00.000Z"),
+          billingPeriodEnd: new Date("2026-05-01T00:00:00.000Z"),
+          currency: "usd",
+          totalAmountCents: 4700,
+        }),
+        "corr-1",
+      );
+    });
+
+    it("should populate line items from monolith's fresh payroll response (picks up salary changes etc.)", async () => {
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0] as {
+        lineItems: Array<{
+          type: string;
+          description: string;
+          amountCents: number;
+          breakdown: Record<string, number | string>;
+        }>;
+      };
+
+      expect(call.lineItems).toHaveLength(2);
+
+      // Alice: new customerCost reflects the fresh salary bump from monolith
+      expect(call.lineItems[0]).toMatchObject({
+        type: "employee_cost",
+        description: "Alice",
+        amountCents: 2400,
+        breakdown: expect.objectContaining({
+          employeeId: "emp-1",
+          salary: 2100,
+          bonus: 0,
+          raise: 0,
+        }),
+      });
+
+      // Bob: unchanged from monolith's perspective
+      expect(call.lineItems[1]).toMatchObject({
+        type: "employee_cost",
+        description: "Bob",
+        amountCents: 2300,
+      });
+    });
+
+    it("should fall back to stripped-one-time copy when the monolith API call fails", async () => {
+      mockMonolithApiService.getPayrollBreakdown.mockRejectedValueOnce(
+        new Error("monolith unreachable"),
+      );
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      // Draft still seeded (preserves "always a draft open" invariant)
+      expect(mockInvoicesService.createDraftInvoice).toHaveBeenCalled();
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0] as {
+        totalAmountCents: number;
+        lineItems: Array<{
+          amountCents: number;
+          breakdown: Record<string, number | string>;
+        }>;
+      };
+
+      // Fallback: copy from last invoice minus one-time adjustments.
+      // Alice: salary 2000 + platformFee 300 = 2300
+      // Bob:   salary 2000 + platformFee 300 = 2300
+      // Total: 4600
+      expect(call.totalAmountCents).toBe(4600);
+      expect(call.lineItems[0].amountCents).toBe(2300);
+      expect(call.lineItems[0].breakdown).toMatchObject({
+        bonus: 0,
+        raise: 0,
+        discount: 0,
+      });
+    });
+
+    it("should skip seeding when a draft already exists for the new period (belt-and-suspenders)", async () => {
+      mockInvoicesService.draftExistsForSubscriptionPeriod.mockResolvedValueOnce(
+        true,
+      );
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      // Advance still happens (subscription progresses once per cycle)
+      expect(mockSubscriptionsRepo.update).toHaveBeenCalled();
+      // But seed is skipped — existing draft is preserved
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should be idempotent when subscription has already advanced past the invoice's period (replay)", async () => {
+      // Subscription's billingPeriodStart is already past the invoice's period
+      mockSubscriptionsRepo.findById.mockResolvedValue({
+        ...mockSubscriptionRow,
+        billingPeriodStart: new Date("2026-04-01T00:00:00.000Z"),
+        billingPeriodEnd: new Date("2026-05-01T00:00:00.000Z"),
+      });
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should skip when invoice is not recurring", async () => {
+      mockInvoicesService.findById.mockResolvedValue({
+        ...finalizedInvoice,
+        type: "onboarding",
+      });
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should skip when invoice has no subscriptionId", async () => {
+      mockInvoicesService.findById.mockResolvedValue({
+        ...finalizedInvoice,
+        subscriptionId: null,
+      });
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should skip when customer lookup returns null", async () => {
+      mockCustomersService.findById.mockResolvedValue(null);
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should skip when invoice is not found", async () => {
+      mockInvoicesService.findById.mockResolvedValue(null);
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
+    });
+
+    it("should skip when subscription is not found", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(null);
+
+      await service.advanceAndSeedNextDraft("inv-1", "corr-1");
+
+      expect(mockSubscriptionsRepo.update).not.toHaveBeenCalled();
+      expect(mockInvoicesService.createDraftInvoice).not.toHaveBeenCalled();
     });
   });
 
@@ -893,6 +1239,213 @@ describe("SubscriptionsService", () => {
       expect(updateCall.billingPeriodStart).toBeUndefined();
       expect(updateCall.billingPeriodEnd).toBeUndefined();
       expect(updateCall.nextBillingDate).toBeUndefined();
+    });
+  });
+
+  describe("buildEmployeeLineItems (via createFromEvent)", () => {
+    type ResolvedEmployee = {
+      employeeId: string;
+      employeeName: string;
+      customerCost: number;
+      salary: number;
+      platformFee: number;
+      bonus: number;
+      raise: number;
+      discount: number;
+    };
+
+    // Pass-through stub: createFromEvent now feeds raw employees into the
+    // resolver. Tests provide the resolved shape directly and the mock
+    // resolver returns it unchanged so assertions remain readable.
+    const makeSubscriptionPayload = (employees: ResolvedEmployee[]) => {
+      const totalAmountCents = employees.reduce(
+        (sum, e) => sum + e.customerCost,
+        0,
+      );
+      mockPayrollResolver.resolve.mockReturnValueOnce({
+        employees,
+        totalAmountCents,
+      });
+      const rawEmployees = employees.map((e) => ({
+        employeeId: e.employeeId,
+        employeeName: e.employeeName,
+        salaryCents: e.salary,
+        platformFeeCents: e.platformFee,
+        discountConfig: null,
+        bonuses: [],
+      }));
+      return {
+        monolithCustomerId: "mono-123",
+        planName: "standard-monthly",
+        amountCents: 10000,
+        currency: "usd",
+        billingInterval: "monthly",
+        billingStartDate: "2026-03-01T00:00:00.000Z",
+        onboardingDate: "2026-02-15T00:00:00.000Z",
+        employees: rawEmployees,
+      };
+    };
+
+    beforeEach(() => {
+      mockCustomersService.findById.mockResolvedValue(mockCustomer);
+      mockSubscriptionsRepo.findByCustomerAndStatuses.mockResolvedValue([]);
+      mockSubscriptionsRepo.create.mockResolvedValue(mockSubscriptionRow);
+      mockSubscriptionsRepo.findById.mockResolvedValue(mockSubscriptionRow);
+      mockInvoicesService.findOpenRecurringDraft.mockResolvedValue(null);
+    });
+
+    it("should set description to just employee name (no ' - Monthly Cost' suffix)", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-001",
+          employeeName: "John Doe",
+          customerCost: 5000,
+          salary: 4000,
+          platformFee: 500,
+          bonus: 300,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-1");
+
+      expect(mockInvoicesService.createDraftInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lineItems: expect.arrayContaining([
+            expect.objectContaining({
+              type: "employee_cost",
+              description: "John Doe",
+            }),
+          ]),
+        }),
+        "corr-emp-1",
+      );
+
+      // Verify no " - Monthly Cost" suffix
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.description).toBe("John Doe");
+      expect(lineItem.description).not.toContain(" - Monthly Cost");
+    });
+
+    it("should include employeeId in breakdown", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-002",
+          employeeName: "Jane Smith",
+          customerCost: 6000,
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-2");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      const lineItem = call.lineItems.find(
+        (li: Record<string, unknown>) => li.type === "employee_cost",
+      );
+      expect(lineItem.breakdown).toEqual(
+        expect.objectContaining({
+          employeeId: "emp-002",
+          salary: 5000,
+          platformFee: 600,
+          bonus: 200,
+          raise: 100,
+          discount: 100,
+        }),
+      );
+    });
+
+    it("should produce one line item per employee with correct fields", async () => {
+      const payload = makeSubscriptionPayload([
+        {
+          employeeId: "emp-a",
+          employeeName: "Alice",
+          customerCost: 3000,
+          salary: 2500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+        {
+          employeeId: "emp-b",
+          employeeName: "Bob",
+          customerCost: 4000,
+          salary: 3500,
+          platformFee: 300,
+          bonus: 100,
+          raise: 50,
+          discount: 50,
+        },
+      ]);
+
+      await service.createFromEvent(payload, "cust-123", "corr-emp-3");
+
+      const call = mockInvoicesService.createDraftInvoice.mock.calls[0][0];
+      expect(call.lineItems).toHaveLength(2);
+
+      const alice = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Alice",
+      );
+      const bob = call.lineItems.find(
+        (li: Record<string, unknown>) => li.description === "Bob",
+      );
+
+      expect(alice).toBeDefined();
+      expect(alice.breakdown.employeeId).toBe("emp-a");
+      expect(alice.amountCents).toBe(3000);
+
+      expect(bob).toBeDefined();
+      expect(bob.breakdown.employeeId).toBe("emp-b");
+      expect(bob.amountCents).toBe(4000);
+    });
+  });
+
+  describe("updateState — voidDraftInvoicesForCustomer on pause/cancel", () => {
+    const activeRow = { ...mockSubscriptionRow, status: "active" };
+
+    it("should call voidDraftInvoicesForCustomer (not voidOpenInvoicesForCustomer) on pause", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = {
+        ...activeRow,
+        status: "paused",
+        nextBillingDate: null,
+      };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState("sub-123", { status: "paused" }, "corr-pause");
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-pause");
+    });
+
+    it("should call voidDraftInvoicesForCustomer on cancel", async () => {
+      mockSubscriptionsRepo.findById.mockResolvedValue(activeRow);
+      const updatedRow = { ...activeRow, status: "canceled" };
+      mockSubscriptionsRepo.updateStateWithConcurrencyCheck.mockResolvedValue(
+        updatedRow,
+      );
+
+      await service.updateState(
+        "sub-123",
+        { status: "canceled" },
+        "corr-cancel",
+      );
+
+      expect(
+        mockInvoicesService.voidDraftInvoicesForCustomer,
+      ).toHaveBeenCalledWith("cust-123", "corr-cancel");
     });
   });
 });

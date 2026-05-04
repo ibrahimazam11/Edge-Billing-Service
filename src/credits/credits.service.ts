@@ -42,19 +42,21 @@ export class CreditsService {
       throw new CustomerNotFoundException(dto.customerId);
     }
 
-    // Validate invoice exists
-    const invoice = await this.invoicesRepository.findById(dto.invoiceId);
+    // Validate invoice exists (only if invoiceId provided)
+    if (dto.invoiceId) {
+      const invoice = await this.invoicesRepository.findById(dto.invoiceId);
 
-    if (!invoice || invoice.customerId !== dto.customerId) {
-      throw new InvoiceNotFoundException(dto.invoiceId);
-    }
+      if (!invoice || invoice.customerId !== dto.customerId) {
+        throw new InvoiceNotFoundException(dto.invoiceId);
+      }
 
-    // Validate credit amount does not exceed invoice total
-    if (dto.amountCents > invoice.totalAmountCents) {
-      throw new CreditExceedsInvoiceException(
-        dto.amountCents,
-        invoice.totalAmountCents,
-      );
+      // Validate credit amount does not exceed invoice total
+      if (dto.amountCents > invoice.totalAmountCents) {
+        throw new CreditExceedsInvoiceException(
+          dto.amountCents,
+          invoice.totalAmountCents,
+        );
+      }
     }
 
     const creditNoteId = generateId();
@@ -67,7 +69,7 @@ export class CreditsService {
         {
           id: creditNoteId,
           customerId: dto.customerId,
-          invoiceId: dto.invoiceId,
+          invoiceId: dto.invoiceId ?? null,
           amountCents: dto.amountCents,
           currency: "usd",
           reason: dto.reason,
@@ -91,14 +93,26 @@ export class CreditsService {
         tx,
       );
 
-      // 3. Record ledger entry (debit credits, credit accounts_receivable)
-      await this.ledgerService.recordCreditNoteIssued(
-        creditNoteId,
-        dto.amountCents,
-        "usd",
-        correlationId,
-        tx,
-      );
+      // 3. Record ledger entry. Positive amount → credit issued (debit credits,
+      // credit AR). Negative amount → credit reversal (debit AR, credit credits)
+      // posted with the absolute magnitude so the ledger's positive-only guard holds.
+      if (dto.amountCents >= 0) {
+        await this.ledgerService.recordCreditNoteIssued(
+          creditNoteId,
+          dto.amountCents,
+          "usd",
+          correlationId,
+          tx,
+        );
+      } else {
+        await this.ledgerService.recordCreditNoteReversed(
+          creditNoteId,
+          Math.abs(dto.amountCents),
+          "usd",
+          correlationId,
+          tx,
+        );
+      }
     });
 
     this.logger.log({
@@ -113,7 +127,7 @@ export class CreditsService {
     return {
       id: creditNoteId,
       customerId: dto.customerId,
-      invoiceId: dto.invoiceId,
+      invoiceId: dto.invoiceId ?? null,
       amountCents: dto.amountCents,
       currency: "usd",
       reason: dto.reason,
@@ -188,11 +202,13 @@ export class CreditsService {
       tx,
     );
 
-    // Update invoice total
+    // Update invoice total and stamp credit amount into metadata so downstream
+    // readers (e.g. the monolith PDF adapter) can render the "Credit Applied" row.
     await this.invoicesRepository.update(
       invoiceId,
       {
         totalAmountCents: newTotal,
+        metadata: { creditAdjustmentCents: creditToApply },
         updatedAt: new Date(),
       },
       tx,

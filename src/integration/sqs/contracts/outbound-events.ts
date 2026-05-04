@@ -1,6 +1,7 @@
 export interface PaymentSucceededPayload {
   invoiceId: string;
   customerId: string;
+  monolithCustomerId: string;
   amountCents: number;
   currency: string;
   paymentMethodId: string;
@@ -10,6 +11,7 @@ export interface PaymentSucceededPayload {
 export interface PaymentFailedPayload {
   invoiceId: string;
   customerId: string;
+  monolithCustomerId: string;
   amountCents: number;
   currency: string;
   failureReason: string;
@@ -19,6 +21,7 @@ export interface PaymentFailedPayload {
 export interface InvoiceCreatedPayload {
   invoiceId: string;
   customerId: string;
+  monolithCustomerId: string;
   subscriptionId?: string;
   totalAmountCents: number;
   currency: string;
@@ -29,6 +32,7 @@ export interface InvoiceCreatedPayload {
 export interface InvoicePaidPayload {
   invoiceId: string;
   customerId: string;
+  monolithCustomerId: string;
   totalAmountCents: number;
   currency: string;
   paidAt: string;
@@ -37,6 +41,7 @@ export interface InvoicePaidPayload {
 export interface DunningEscalatedPayload {
   invoiceId: string;
   customerId: string;
+  monolithCustomerId: string;
   totalAttempts: number;
   failureHistory: Array<{
     attemptNumber: number;

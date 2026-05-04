@@ -18,3 +18,4 @@ export * from "./migration-logs";
 export * from "./audit-trail";
 export * from "./refunds";
 export * from "./gateway-assignments";
+export * from "./webhook-events";

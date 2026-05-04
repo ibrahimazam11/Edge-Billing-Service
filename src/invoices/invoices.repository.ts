@@ -5,7 +5,6 @@ import {
   eq,
   gte,
   inArray,
-  isNull,
   lt,
   lte,
   sql,
@@ -53,6 +52,7 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     filters: {
       customerId?: string;
       status?: string;
+      type?: string;
       startDate?: string;
       endDate?: string;
       cursor?: string;
@@ -66,6 +66,9 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     }
     if (filters.status) {
       conditions.push(eq(invoices.status, filters.status));
+    }
+    if (filters.type) {
+      conditions.push(eq(invoices.type, filters.type));
     }
     if (filters.startDate) {
       conditions.push(gte(invoices.createdAt, new Date(filters.startDate)));
@@ -94,7 +97,7 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       .from(invoices)
       .where(
         and(
-          isNull(invoices.subscriptionId),
+          inArray(invoices.type, ["onboarding", "one_time"]),
           eq(invoices.status, "draft"),
           lte(invoices.dueDate, scheduledDate),
         ),
@@ -118,8 +121,11 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       );
   }
 
-  async getLineItemsByInvoiceId(invoiceId: string): Promise<InvoiceLineItem[]> {
-    return this.db
+  async getLineItemsByInvoiceId(
+    invoiceId: string,
+    tx?: TransactionClient,
+  ): Promise<InvoiceLineItem[]> {
+    return this.conn(tx)
       .select()
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoiceId, invoiceId));
@@ -138,6 +144,95 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     tx?: TransactionClient,
   ): Promise<void> {
     await this.conn(tx).insert(invoiceLineItems).values(data);
+  }
+
+  async createLineItems(
+    data: NewInvoiceLineItem[],
+    tx?: TransactionClient,
+  ): Promise<void> {
+    if (data.length === 0) return;
+    await this.conn(tx).insert(invoiceLineItems).values(data);
+  }
+
+  async deleteLineItemsByInvoiceId(
+    invoiceId: string,
+    tx?: TransactionClient,
+  ): Promise<void> {
+    await this.conn(tx)
+      .delete(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoiceId));
+  }
+
+  async deleteLineItemsByInvoiceIdAndType(
+    invoiceId: string,
+    type: string,
+    tx?: TransactionClient,
+  ): Promise<void> {
+    await this.conn(tx)
+      .delete(invoiceLineItems)
+      .where(
+        and(
+          eq(invoiceLineItems.invoiceId, invoiceId),
+          eq(invoiceLineItems.type, type),
+        ),
+      );
+  }
+
+  /**
+   * Counts open recurring drafts for a customer, capped at 2. Expected to be
+   * 0 or 1; >=2 signals an upstream invariant break the caller should
+   * ERROR-log. Capped scan keeps this diagnostic cheap even if a corrupted
+   * customer accumulates many stale drafts.
+   */
+  async countOpenRecurringDrafts(customerId: string): Promise<number> {
+    const rows = await this.db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          eq(invoices.status, "draft"),
+          eq(invoices.type, "recurring"),
+        ),
+      )
+      .limit(2);
+    return rows.length;
+  }
+
+  /**
+   * Returns the customer's open *recurring draft* — the only invoice payroll
+   * resolution is allowed to mutate. Filters strictly to `status='draft' AND
+   * type='recurring'`, never returns onboarding, one-time, finalized, paid, or
+   * voided invoices. Ordered `createdAt DESC` so that, in the anomalous case of
+   * multiple drafts, the most recent wins; the caller is expected to log the
+   * anomaly when that happens.
+   */
+  async findOpenRecurringDraft(customerId: string): Promise<Invoice | null> {
+    const [row] = await this.db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          eq(invoices.status, "draft"),
+          eq(invoices.type, "recurring"),
+        ),
+      )
+      .orderBy(desc(invoices.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async findDraftByCustomerId(customerId: string): Promise<Invoice | null> {
+    const [row] = await this.db
+      .select()
+      .from(invoices)
+      .where(
+        and(eq(invoices.customerId, customerId), eq(invoices.status, "draft")),
+      )
+      .orderBy(invoices.createdAt)
+      .limit(1);
+    return row ?? null;
   }
 
   async updateWithConcurrencyCheck(

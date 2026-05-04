@@ -7,10 +7,12 @@ import { SubscriptionsModule } from "../subscriptions/subscriptions.module";
 import { SubscriptionsService } from "../subscriptions/subscriptions.service";
 import { ChargesModule } from "../charges/charges.module";
 import { InvoicesModule } from "../invoices/invoices.module";
+import { CustomersModule } from "../customers/customers.module";
 import {
   WebhookProcessingService,
   SUBSCRIPTIONS_SERVICE_TOKEN,
 } from "./webhook-processing.service";
+import { WebhookEventsRepository } from "./webhook-events.repository";
 
 @Module({
   imports: [
@@ -21,14 +23,16 @@ import {
     forwardRef(() => SubscriptionsModule),
     forwardRef(() => ChargesModule),
     forwardRef(() => InvoicesModule),
+    forwardRef(() => CustomersModule),
   ],
   providers: [
     WebhookProcessingService,
+    WebhookEventsRepository,
     {
       provide: SUBSCRIPTIONS_SERVICE_TOKEN,
       useExisting: SubscriptionsService,
     },
   ],
-  exports: [WebhookProcessingService],
+  exports: [WebhookProcessingService, WebhookEventsRepository],
 })
 export class WebhooksModule {}

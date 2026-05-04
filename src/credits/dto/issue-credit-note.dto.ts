@@ -2,7 +2,7 @@ import {
   IsUUID,
   IsNotEmpty,
   IsInt,
-  Min,
+  NotEquals,
   IsString,
   IsOptional,
 } from "class-validator";
@@ -12,12 +12,13 @@ export class IssueCreditNoteDto {
   @IsNotEmpty()
   customerId!: string;
 
+  @IsOptional()
   @IsUUID()
-  @IsNotEmpty()
-  invoiceId!: string;
+  invoiceId?: string;
 
+  // Negative values represent a credit-balance reduction (set-balance flow from monolith).
   @IsInt()
-  @Min(1)
+  @NotEquals(0)
   amountCents!: number;
 
   @IsString()
