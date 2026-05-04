@@ -35,7 +35,7 @@ pipelines:
                 - pnpm test
 
   branches:
-    develop:
+    staging:
       - step:
           name: Build + Scan + Push (Staging)
           services:
