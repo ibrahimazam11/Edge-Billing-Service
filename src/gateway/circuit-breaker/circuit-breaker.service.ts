@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional, Inject } from "@nestjs/common";
 import CircuitBreaker from "opossum";
+import * as Sentry from "@sentry/nestjs";
 
 export const CIRCUIT_BREAKER_OPTIONS = Symbol("CIRCUIT_BREAKER_OPTIONS");
 
@@ -42,6 +43,13 @@ export class CircuitBreakerService {
       this.logger.warn({
         action: "circuit_breaker.state_change",
         circuitState: "open",
+      });
+      Sentry.captureMessage("Circuit breaker opened", {
+        level: "warning",
+        tags: {
+          component: "circuit_breaker",
+          circuit_state: "open",
+        },
       });
     });
 

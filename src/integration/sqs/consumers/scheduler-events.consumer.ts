@@ -1,6 +1,7 @@
 import { Injectable, Logger, Optional, Inject } from "@nestjs/common";
 import { SqsMessageHandler, SqsConsumerEventHandler } from "@ssut/nestjs-sqs";
 import type { Message as SqsMessage } from "@aws-sdk/client-sqs";
+import * as Sentry from "@sentry/nestjs";
 import type { SqsEnvelope } from "../../../common/interfaces/envelope.interface";
 import { IdempotencyService } from "../idempotency.service";
 import type {
@@ -38,10 +39,17 @@ export class SchedulerEventsConsumer {
     let envelope: SqsEnvelope;
     try {
       envelope = JSON.parse(message.Body!) as SqsEnvelope;
-    } catch {
+    } catch (parseError) {
       this.logger.error({
         message: "Failed to parse SQS message body",
         messageId: message.MessageId,
+      });
+      Sentry.captureException(parseError, {
+        tags: {
+          queue: "scheduler-inbound",
+          stage: "json_parse",
+          ...(message.MessageId ? { messageId: message.MessageId } : {}),
+        },
       });
       return;
     }
@@ -117,6 +125,13 @@ export class SchedulerEventsConsumer {
       error: error.message,
       messageId: message.MessageId,
     });
+    Sentry.captureException(error, {
+      tags: {
+        queue: "scheduler-inbound",
+        stage: "processing",
+        ...(message.MessageId ? { messageId: message.MessageId } : {}),
+      },
+    });
   }
 
   @SqsConsumerEventHandler("scheduler-inbound", "error")
@@ -124,6 +139,9 @@ export class SchedulerEventsConsumer {
     this.logger.error({
       message: "SQS error on scheduler-inbound queue",
       error: error.message,
+    });
+    Sentry.captureException(error, {
+      tags: { queue: "scheduler-inbound", stage: "transport" },
     });
   }
 
@@ -201,6 +219,15 @@ export class SchedulerEventsConsumer {
           invoiceId: attempt.invoiceId,
           error: error instanceof Error ? error.message : String(error),
           correlationId,
+        });
+        Sentry.captureException(error, {
+          tags: {
+            queue: "scheduler-inbound",
+            stage: "dunning_attempt",
+            correlation_id: correlationId,
+            dunning_attempt_id: attempt.id,
+            invoice_id: attempt.invoiceId,
+          },
         });
       }
     }

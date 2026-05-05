@@ -6,6 +6,11 @@ import type { SqsEnvelope } from "../../../common/interfaces/envelope.interface"
 import type { CustomersService } from "../../../customers/customers.service";
 import type { SubscriptionsService } from "../../../subscriptions/subscriptions.service";
 import type { WebhookProcessingService } from "../../../webhooks/webhook-processing.service";
+import * as Sentry from "@sentry/nestjs";
+
+jest.mock("@sentry/nestjs", () => ({
+  captureException: jest.fn(),
+}));
 
 describe("MonolithEventsConsumer", () => {
   let consumer: MonolithEventsConsumer;
@@ -556,6 +561,66 @@ describe("MonolithEventsConsumer", () => {
       expect(
         mockWebhookProcessingService.processWebhookEvent,
       ).toHaveBeenCalledWith(payload, "corr-forward-test");
+    });
+  });
+
+  describe("Sentry capture on errors", () => {
+    beforeEach(() => {
+      (Sentry.captureException as jest.Mock).mockClear();
+    });
+
+    it("captures malformed JSON body in Sentry with queue + messageId tags", async () => {
+      const message: SqsMessage = {
+        MessageId: "msg-bad-json",
+        Body: "{not valid json",
+      };
+
+      await consumer.handleMessage(message);
+
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.any(SyntaxError),
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "monolith-inbound",
+            stage: "json_parse",
+            messageId: "msg-bad-json",
+          }),
+        }),
+      );
+    });
+
+    it("captures errors in onProcessingError with processing-stage tag", () => {
+      const err = new Error("kaboom");
+      consumer.onProcessingError(err, {
+        MessageId: "msg-99",
+      } as SqsMessage);
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        err,
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "monolith-inbound",
+            stage: "processing",
+            messageId: "msg-99",
+          }),
+        }),
+      );
+    });
+
+    it("captures errors in onError with transport-stage tag", () => {
+      const err = new Error("transport down");
+      consumer.onError(err);
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        err,
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "monolith-inbound",
+            stage: "transport",
+          }),
+        }),
+      );
     });
   });
 });
