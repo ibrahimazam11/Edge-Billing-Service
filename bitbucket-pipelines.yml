@@ -62,12 +62,14 @@ pipelines:
             # Here we extract that exact dist and upload sourcemaps so the
             # debug IDs in the running image match what Sentry has.
             # SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT are repo vars.
+            # Upload failures must NOT block the deploy — degraded traces are
+            # better than a stuck pipeline during a Sentry-side outage.
             - if [ -n "$SENTRY_AUTH_TOKEN" ]; then
-                set -e;
-                docker create --name billing-extract $IMAGE:$TAG;
-                docker cp billing-extract:/app/dist ./dist;
-                docker rm billing-extract;
-                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist;
+                docker create --name billing-extract $IMAGE:$TAG &&
+                docker cp billing-extract:/app/dist ./dist &&
+                docker rm billing-extract &&
+                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist
+                || echo "Sentry sourcemap upload failed — continuing deploy with degraded trace resolution";
               else
                 echo "SENTRY_AUTH_TOKEN not set — skipping sourcemap upload";
               fi
@@ -114,12 +116,14 @@ pipelines:
 
             # The Dockerfile build stage already injected debug IDs into dist.
             # Extract and upload so debug IDs in the image match Sentry.
+            # Upload failures must NOT block the deploy — degraded traces are
+            # better than a stuck pipeline during a Sentry-side outage.
             - if [ -n "$SENTRY_AUTH_TOKEN" ]; then
-                set -e;
-                docker create --name billing-extract $IMAGE:$TAG;
-                docker cp billing-extract:/app/dist ./dist;
-                docker rm billing-extract;
-                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist;
+                docker create --name billing-extract $IMAGE:$TAG &&
+                docker cp billing-extract:/app/dist ./dist &&
+                docker rm billing-extract &&
+                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist
+                || echo "Sentry sourcemap upload failed — continuing deploy with degraded trace resolution";
               else
                 echo "SENTRY_AUTH_TOKEN not set — skipping sourcemap upload";
               fi
