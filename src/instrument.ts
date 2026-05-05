@@ -98,8 +98,12 @@ export function redactPii<T>(value: T, depth = 0): T {
 
 const dsn = process.env.SENTRY_DSN;
 
+// Sentry's `environment` mirrors NODE_ENV — same convention as the rest of
+// the service (see app.config.ts and time-machine.service.ts). Staging deploys
+// run with NODE_ENV=staging, prod with NODE_ENV=production, local dev with
+// NODE_ENV=development.
 function resolveEnvironment(): "staging" | "production" | "development" {
-  const raw = (process.env.SENTRY_ENVIRONMENT || "").toLowerCase();
+  const raw = (process.env.NODE_ENV || "").toLowerCase();
   if (raw === "staging" || raw === "production") return raw;
   return "development";
 }

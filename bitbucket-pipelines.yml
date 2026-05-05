@@ -48,7 +48,8 @@ pipelines:
             - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
             - export TAG=${BITBUCKET_COMMIT:0:7}
             - export SENTRY_RELEASE=$TAG
-            - export SENTRY_ENVIRONMENT=staging
+            # Sentry environment mirrors NODE_ENV (see src/instrument.ts).
+            - export NODE_ENV=staging
 
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
@@ -101,7 +102,8 @@ pipelines:
             - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
             - export TAG=${BITBUCKET_COMMIT:0:7}
             - export SENTRY_RELEASE=$TAG
-            - export SENTRY_ENVIRONMENT=production
+            # Sentry environment mirrors NODE_ENV (see src/instrument.ts).
+            - export NODE_ENV=production
 
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"

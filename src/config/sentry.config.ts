@@ -2,8 +2,9 @@ import { registerAs } from "@nestjs/config";
 
 export type SentryEnvironment = "staging" | "production" | "development";
 
+// Mirrors NODE_ENV — matches app.config.ts and time-machine guard.
 function resolveEnvironment(): SentryEnvironment {
-  const raw = (process.env.SENTRY_ENVIRONMENT || "").toLowerCase();
+  const raw = (process.env.NODE_ENV || "").toLowerCase();
   if (raw === "staging" || raw === "production") return raw;
   return "development";
 }
