@@ -1,0 +1,18 @@
+overrides:
+  fast-xml-parser: '>=5.5.6'
+  lodash: '>=4.18.0'
+  minimatch: '>=9.0.7'
+  multer: '>=2.1.1'
+  path-to-regexp: '>=8.4.0'
+  picomatch: '>=4.0.4'
+
+# pnpm 11+ blocks postinstall scripts by default and requires an explicit
+# allow/deny list. @sentry/cli ships a binary, esbuild and unrs-resolver
+# need native bindings, @nestjs/core prints info on install. @scarf/scarf
+# is anonymous install telemetry — deny.
+allowBuilds:
+  '@nestjs/core': true
+  '@scarf/scarf': false
+  '@sentry/cli': true
+  esbuild: true
+  unrs-resolver: true
