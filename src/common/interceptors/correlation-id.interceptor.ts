@@ -22,6 +22,11 @@ export class CorrelationIdInterceptor implements NestInterceptor {
     request.headers[CORRELATION_ID_HEADER] = correlationId;
     response.setHeader(CORRELATION_ID_HEADER, correlationId);
 
+    // Sentry scope tagging is handled at each capture site (e.g.
+    // GlobalExceptionFilter passes `correlation_id` explicitly via tags).
+    // Do NOT call Sentry.getCurrentScope().setTag here — without an explicit
+    // per-request scope fork it would leak across concurrent requests.
+
     return next.handle();
   }
 }

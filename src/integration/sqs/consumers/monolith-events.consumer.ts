@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { SqsMessageHandler, SqsConsumerEventHandler } from "@ssut/nestjs-sqs";
 import type { Message as SqsMessage } from "@aws-sdk/client-sqs";
+import * as Sentry from "@sentry/nestjs";
 import type { SqsEnvelope } from "../../../common/interfaces/envelope.interface";
 import { IdempotencyService } from "../idempotency.service";
 import type { CustomersService } from "../../../customers/customers.service";
@@ -54,10 +55,17 @@ export class MonolithEventsConsumer {
     let envelope: SqsEnvelope;
     try {
       envelope = JSON.parse(message.Body!) as SqsEnvelope;
-    } catch {
+    } catch (parseError) {
       this.logger.error({
         message: "Failed to parse SQS message body",
         messageId: message.MessageId,
+      });
+      Sentry.captureException(parseError, {
+        tags: {
+          queue: "monolith-inbound",
+          stage: "json_parse",
+          ...(message.MessageId ? { messageId: message.MessageId } : {}),
+        },
       });
       return;
     }
@@ -163,6 +171,13 @@ export class MonolithEventsConsumer {
       error: error.message,
       messageId: message.MessageId,
     });
+    Sentry.captureException(error, {
+      tags: {
+        queue: "monolith-inbound",
+        stage: "processing",
+        ...(message.MessageId ? { messageId: message.MessageId } : {}),
+      },
+    });
   }
 
   @SqsConsumerEventHandler("monolith-inbound", "error")
@@ -170,6 +185,9 @@ export class MonolithEventsConsumer {
     this.logger.error({
       message: "SQS error on monolith-inbound queue",
       error: error.message,
+    });
+    Sentry.captureException(error, {
+      tags: { queue: "monolith-inbound", stage: "transport" },
     });
   }
 

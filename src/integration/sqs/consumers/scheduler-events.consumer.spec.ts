@@ -3,6 +3,11 @@ import { IdempotencyService } from "../idempotency.service";
 import { Logger } from "@nestjs/common";
 import type { Message as SqsMessage } from "@aws-sdk/client-sqs";
 import type { SqsEnvelope } from "../../../common/interfaces/envelope.interface";
+import * as Sentry from "@sentry/nestjs";
+
+jest.mock("@sentry/nestjs", () => ({
+  captureException: jest.fn(),
+}));
 
 describe("SchedulerEventsConsumer", () => {
   let consumer: SchedulerEventsConsumer;
@@ -470,6 +475,113 @@ describe("SchedulerEventsConsumer", () => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "ReconciliationService not available",
+        }),
+      );
+    });
+  });
+
+  describe("Sentry capture on errors", () => {
+    beforeEach(() => {
+      (Sentry.captureException as jest.Mock).mockClear();
+    });
+
+    it("captures malformed JSON body in Sentry with queue + messageId tags", async () => {
+      const message: SqsMessage = {
+        MessageId: "sched-bad-json",
+        Body: "{invalid",
+      };
+
+      await consumer.handleMessage(message);
+
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.any(SyntaxError),
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "scheduler-inbound",
+            stage: "json_parse",
+            messageId: "sched-bad-json",
+          }),
+        }),
+      );
+    });
+
+    it("captures errors in onProcessingError with processing-stage tag", () => {
+      const err = new Error("scheduler failed");
+      consumer.onProcessingError(err, {
+        MessageId: "sched-77",
+      } as SqsMessage);
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        err,
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "scheduler-inbound",
+            stage: "processing",
+            messageId: "sched-77",
+          }),
+        }),
+      );
+    });
+
+    it("captures errors in onError with transport-stage tag", () => {
+      const err = new Error("scheduler transport down");
+      consumer.onError(err);
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        err,
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "scheduler-inbound",
+            stage: "transport",
+          }),
+        }),
+      );
+    });
+
+    it("captures each failed dunning attempt with attempt + invoice tags", async () => {
+      const dunningService = {
+        getScheduledDunningAttempts: jest.fn().mockResolvedValue([
+          { id: "att-1", invoiceId: "inv-1" },
+          { id: "att-2", invoiceId: "inv-2" },
+        ]),
+        executeDunningAttempt: jest
+          .fn()
+          .mockResolvedValueOnce({ status: "succeeded" })
+          .mockRejectedValueOnce(new Error("dunning blew up")),
+      };
+
+      consumer = new SchedulerEventsConsumer(
+        mockIdempotencyService as unknown as IdempotencyService,
+        undefined,
+        dunningService as never,
+      );
+
+      const envelope: SqsEnvelope = {
+        version: "1.0",
+        type: "billing.schedule.process-dunning",
+        timestamp: new Date().toISOString(),
+        correlationId: "corr-d-1",
+        payload: { scheduledDate: "2026-05-05" },
+      };
+      const message: SqsMessage = {
+        MessageId: "msg-d-1",
+        Body: JSON.stringify(envelope),
+      };
+
+      await consumer.handleMessage(message);
+
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            queue: "scheduler-inbound",
+            stage: "dunning_attempt",
+            correlation_id: "corr-d-1",
+            dunning_attempt_id: "att-2",
+            invoice_id: "inv-2",
+          }),
         }),
       );
     });

@@ -43,17 +43,36 @@ pipelines:
           caches:
             - docker
           script:
-            - apk add --no-cache curl
+            - apk add --no-cache curl nodejs npm
             - pip install awscli
             - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
             - export TAG=${BITBUCKET_COMMIT:0:7}
+            - export SENTRY_RELEASE=$TAG
+            # Sentry environment mirrors NODE_ENV (see src/instrument.ts).
+            - export NODE_ENV=staging
 
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
             - aws configure set default.region "us-east-1"
             - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 082178185739.dkr.ecr.us-east-1.amazonaws.com
 
-            - docker build -t $IMAGE:$TAG -t $IMAGE:staging .
+            - docker build --build-arg SENTRY_RELEASE=$SENTRY_RELEASE -t $IMAGE:$TAG -t $IMAGE:staging .
+
+            # The Dockerfile build stage already injected debug IDs into dist.
+            # Here we extract that exact dist and upload sourcemaps so the
+            # debug IDs in the running image match what Sentry has.
+            # SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT are repo vars.
+            # Upload failures must NOT block the deploy — degraded traces are
+            # better than a stuck pipeline during a Sentry-side outage.
+            - if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+                docker create --name billing-extract $IMAGE:$TAG &&
+                docker cp billing-extract:/app/dist ./dist &&
+                docker rm billing-extract &&
+                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist
+                || echo "Sentry sourcemap upload failed — continuing deploy with degraded trace resolution";
+              else
+                echo "SENTRY_AUTH_TOKEN not set — skipping sourcemap upload";
+              fi
 
             - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
             - docker save $IMAGE:$TAG -o billing.tar
@@ -80,17 +99,34 @@ pipelines:
           caches:
             - docker
           script:
-            - apk add --no-cache curl
+            - apk add --no-cache curl nodejs npm
             - pip install awscli
             - export IMAGE="082178185739.dkr.ecr.us-east-1.amazonaws.com/billing-service"
             - export TAG=${BITBUCKET_COMMIT:0:7}
+            - export SENTRY_RELEASE=$TAG
+            # Sentry environment mirrors NODE_ENV (see src/instrument.ts).
+            - export NODE_ENV=production
 
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
             - aws configure set default.region "us-east-1"
             - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 082178185739.dkr.ecr.us-east-1.amazonaws.com
 
-            - docker build -t $IMAGE:$TAG -t $IMAGE:latest .
+            - docker build --build-arg SENTRY_RELEASE=$SENTRY_RELEASE -t $IMAGE:$TAG -t $IMAGE:latest .
+
+            # The Dockerfile build stage already injected debug IDs into dist.
+            # Extract and upload so debug IDs in the image match Sentry.
+            # Upload failures must NOT block the deploy — degraded traces are
+            # better than a stuck pipeline during a Sentry-side outage.
+            - if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+                docker create --name billing-extract $IMAGE:$TAG &&
+                docker cp billing-extract:/app/dist ./dist &&
+                docker rm billing-extract &&
+                npx --yes @sentry/cli@2 sourcemaps upload --release="$SENTRY_RELEASE" --org="$SENTRY_ORG" --project="$SENTRY_PROJECT" ./dist
+                || echo "Sentry sourcemap upload failed — continuing deploy with degraded trace resolution";
+              else
+                echo "SENTRY_AUTH_TOKEN not set — skipping sourcemap upload";
+              fi
 
             - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
             - docker save $IMAGE:$TAG -o billing.tar
