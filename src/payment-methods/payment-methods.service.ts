@@ -581,6 +581,7 @@ export class PaymentMethodsService {
       fallbackOrder: pm.fallbackOrder ?? null,
       gatewayProvider: pm.gatewayProvider,
       status: pm.status,
+      metadata: (pm.metadata as Record<string, unknown> | null) ?? null,
       createdAt: pm.createdAt.toISOString(),
       updatedAt: pm.updatedAt.toISOString(),
     };

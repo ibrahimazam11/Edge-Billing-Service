@@ -23,6 +23,7 @@ import type {
 import {
   mapStripeCustomer,
   mapStripePaymentMethod,
+  mapStripeSource,
   mapStripePaymentIntent,
   mapStripeRefund,
   mapStripeBalanceTransaction,
@@ -154,11 +155,54 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
 
   async listPaymentMethods(customerId: string): Promise<PaymentMethodResult[]> {
     return this.executeWithResilience("listPaymentMethods", async () => {
-      const result = await this.stripe.paymentMethods.list({
-        customer: customerId,
-        limit: 100,
+      // Modern API: returns pm_* objects.
+      // Legacy API: returns ba_* (BankAccount) and src_* (Source) — required for existing
+      // customers migrated from the monolith. paymentMethods.list does NOT include legacy
+      // ids; without the listSources merge, ~813 existing customers appear to have no PM.
+      //
+      // Both API endpoints are paginated to follow has_more — a single 100-item page would
+      // silently truncate fat-tail customers (and could miss their actual default PM if it
+      // lives past position 100).
+      const pmObjects: Stripe.PaymentMethod[] = [];
+      let pmStartingAfter: string | undefined;
+      while (true) {
+        const page = await this.stripe.paymentMethods.list({
+          customer: customerId,
+          limit: 100,
+          ...(pmStartingAfter ? { starting_after: pmStartingAfter } : {}),
+        });
+        pmObjects.push(...page.data);
+        if (!page.has_more || page.data.length === 0) break;
+        pmStartingAfter = page.data[page.data.length - 1].id;
+      }
+
+      const sourceObjects: Array<Stripe.BankAccount | Stripe.Card | Stripe.Source> = [];
+      let srcStartingAfter: string | undefined;
+      while (true) {
+        const page = await this.stripe.customers.listSources(customerId, {
+          limit: 100,
+          ...(srcStartingAfter ? { starting_after: srcStartingAfter } : {}),
+        });
+        sourceObjects.push(
+          ...(page.data as Array<Stripe.BankAccount | Stripe.Card | Stripe.Source>),
+        );
+        if (!page.has_more || page.data.length === 0) break;
+        srcStartingAfter = page.data[page.data.length - 1].id;
+      }
+
+      const mapped: PaymentMethodResult[] = [
+        ...pmObjects.map((pm) => mapStripePaymentMethod(pm, false)),
+        ...sourceObjects.map((s) => mapStripeSource(s, false)),
+      ];
+      // De-dupe by id (defensive — Stripe shouldn't return the same id from both endpoints,
+      // but Sources API and PaymentMethods API have historically overlapped during deprecation
+      // windows).
+      const seen = new Set<string>();
+      return mapped.filter((m) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
       });
-      return result.data.map((pm) => mapStripePaymentMethod(pm, false));
     });
   }
 

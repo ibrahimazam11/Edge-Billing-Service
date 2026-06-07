@@ -14,6 +14,7 @@ jest.mock("stripe", () => {
       create: jest.fn(),
       update: jest.fn(),
       retrieve: jest.fn(),
+      listSources: jest.fn().mockResolvedValue({ data: [], has_more: false }),
     },
     paymentMethods: {
       attach: jest.fn(),
@@ -46,7 +47,7 @@ jest.mock("stripe", () => {
 describe("StripeAdapter", () => {
   let adapter: StripeAdapter;
   let mockStripeInstance: {
-    customers: { create: jest.Mock; update: jest.Mock; retrieve: jest.Mock };
+    customers: { create: jest.Mock; update: jest.Mock; retrieve: jest.Mock; listSources: jest.Mock };
     paymentMethods: { attach: jest.Mock; detach: jest.Mock; list: jest.Mock };
     paymentIntents: { create: jest.Mock };
     refunds: { create: jest.Mock };
@@ -415,6 +416,63 @@ describe("StripeAdapter", () => {
       const result = await adapter.listPaymentMethods("cus_123");
 
       expect(result).toEqual([]);
+    });
+
+    it("merges legacy ba_* sources from customers.listSources with paymentMethods.list", async () => {
+      mockStripeInstance.paymentMethods.list.mockResolvedValue({
+        data: [],
+        has_more: false,
+      });
+      mockStripeInstance.customers.listSources.mockResolvedValue({
+        data: [
+          {
+            id: "ba_legacy_1",
+            object: "bank_account",
+            customer: "cus_123",
+            last4: "6789",
+            bank_name: "Example Bank",
+          },
+        ],
+        has_more: false,
+      });
+
+      const result = await adapter.listPaymentMethods("cus_123");
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("ba_legacy_1");
+      expect(result[0]?.type).toBe("bank_account");
+      expect(result[0]?.bankName).toBe("Example Bank");
+      expect(result[0]?.last4).toBe("6789");
+      expect(mockStripeInstance.customers.listSources).toHaveBeenCalledWith(
+        "cus_123",
+        { limit: 100 },
+      );
+    });
+
+    it("de-dupes by id when both endpoints return the same payment method", async () => {
+      mockStripeInstance.paymentMethods.list.mockResolvedValue({
+        data: [makeStripePaymentMethod()],
+        has_more: false,
+      });
+      mockStripeInstance.customers.listSources.mockResolvedValue({
+        data: [
+          {
+            id: "pm_123",
+            object: "card",
+            customer: "cus_123",
+            last4: "4242",
+            brand: "visa",
+            exp_month: 12,
+            exp_year: 2027,
+          },
+        ],
+        has_more: false,
+      });
+
+      const result = await adapter.listPaymentMethods("cus_123");
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("pm_123");
     });
   });
 
