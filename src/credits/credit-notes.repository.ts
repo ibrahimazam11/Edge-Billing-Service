@@ -29,6 +29,23 @@ export class CreditNotesRepository extends BaseRepository<typeof creditNotes> {
       .where(eq(creditNotes.customerId, customerId));
   }
 
+  async findByCustomerAndReason(
+    customerId: string,
+    reason: string,
+  ): Promise<CreditNote | null> {
+    const [row] = await this.db
+      .select()
+      .from(creditNotes)
+      .where(
+        and(
+          eq(creditNotes.customerId, customerId),
+          eq(creditNotes.reason, reason),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   async findForBillingHistory(
     customerId: string,
     filters: { startDate?: string; endDate?: string; cursor?: Date },

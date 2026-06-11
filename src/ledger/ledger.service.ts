@@ -11,6 +11,7 @@ import { generateId } from "../common/utils/uuid.util";
 import { BillingException } from "../common/exceptions/billing.exception";
 import { LedgerAccountsRepository } from "./ledger-accounts.repository";
 import { LedgerEntriesRepository } from "./ledger-entries.repository";
+import { ledgerEntries } from "../database/schema/ledger-entries";
 
 type ReferenceType =
   | "invoice"
@@ -20,6 +21,8 @@ type ReferenceType =
   | "credit_note"
   | "credit_application"
   | "migration";
+
+type LedgerEntry = typeof ledgerEntries.$inferSelect;
 
 @Injectable()
 export class LedgerService implements OnModuleInit {
@@ -265,6 +268,60 @@ export class LedgerService implements OnModuleInit {
       correlationId,
       tx,
     );
+  }
+
+  /**
+   * Inserts a direction-mirrored reversal of an existing ledger entry.
+   * Swaps debit_account_id ↔ credit_account_id; preserves amountCents,
+   * currency, referenceType, referenceId, and correlationId (carries audit
+   * pairing forward). Description prefixed `Rollback of migration entry:`.
+   *
+   * Canonical reversal helper for the customer-migration cleanup path.
+   * The legacy `recordMigrationVoidReversal` stays for `src/migration/*`.
+   */
+  async recordReversedEntry(
+    originalRow: LedgerEntry,
+    tx: Parameters<Parameters<DrizzleDatabase["transaction"]>[0]>[0],
+  ): Promise<string> {
+    if (originalRow.amountCents <= 0) {
+      throw new BillingException(
+        `Ledger entry amount must be positive, got: ${originalRow.amountCents}`,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+
+    const id = generateId();
+    const entryData = {
+      id,
+      debitAccountId: originalRow.creditAccountId,
+      creditAccountId: originalRow.debitAccountId,
+      amountCents: originalRow.amountCents,
+      currency: originalRow.currency,
+      referenceType: originalRow.referenceType,
+      referenceId: originalRow.referenceId,
+      description: `Rollback of migration entry: ${originalRow.description ?? "(no description)"}`,
+      correlationId: originalRow.correlationId,
+      createdAt: new Date(),
+    };
+
+    await this.ledgerEntriesRepo.createInTx(
+      entryData,
+      tx as unknown as Parameters<typeof this.ledgerEntriesRepo.createInTx>[1],
+    );
+
+    this.logger.log({
+      message: "Ledger reversal entry created",
+      ledgerEntryId: id,
+      reverseOf: originalRow.id,
+      debitAccountId: entryData.debitAccountId,
+      creditAccountId: entryData.creditAccountId,
+      amount: entryData.amountCents,
+      referenceType: entryData.referenceType,
+      referenceId: entryData.referenceId,
+      correlationId: entryData.correlationId,
+    });
+
+    return id;
   }
 
   async recordMigrationVoidReversal(

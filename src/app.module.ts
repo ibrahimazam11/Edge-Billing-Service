@@ -31,6 +31,7 @@ import { ReportingModule } from "./reporting/reporting.module";
 import { FeatureFlagsModule } from "./feature-flags/feature-flags.module";
 import { SurchargesModule } from "./surcharges/surcharges.module";
 import { MigrationModule } from "./migration/migration.module";
+import { CustomerMigrationModule } from "./customer-migration/customer-migration.module";
 import { monolithDatabaseConfig } from "./config/monolith-database.config";
 import { monolithConfig } from "./config/monolith.config";
 import { AdminModule } from "./admin/admin.module";
@@ -74,6 +75,7 @@ import { MonolithApiModule } from "./integration/monolith-api/monolith-api.modul
     FeatureFlagsModule,
     SurchargesModule,
     MigrationModule,
+    CustomerMigrationModule,
     AdminModule,
     RefundsModule,
     MonolithApiModule,

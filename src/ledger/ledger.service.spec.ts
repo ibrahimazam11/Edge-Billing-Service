@@ -603,6 +603,97 @@ describe("LedgerService", () => {
     });
   });
 
+  describe("recordReversedEntry", () => {
+    it("inserts a direction-mirrored reversal: AR→Rev original becomes Rev→AR reversal", async () => {
+      const originalRow = {
+        id: "le-orig-1",
+        debitAccountId: ACCOUNT_IDS.accounts_receivable,
+        creditAccountId: ACCOUNT_IDS.revenue,
+        amountCents: 5000,
+        currency: "usd",
+        referenceType: "migration",
+        referenceId: "inv-1",
+        description: "Historical migration from monolith payroll #abc",
+        correlationId: "customer-migration-run1-payrolls",
+        createdAt: new Date(),
+      };
+
+      const externalTx = { some: "tx" };
+      const result = await service.recordReversedEntry(
+        originalRow as never,
+        externalTx as never,
+      );
+
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(mockLedgerEntriesRepo.createInTx).toHaveBeenCalledWith(
+        expect.objectContaining({
+          debitAccountId: ACCOUNT_IDS.revenue,
+          creditAccountId: ACCOUNT_IDS.accounts_receivable,
+          amountCents: 5000,
+          currency: "usd",
+          referenceType: "migration",
+          referenceId: "inv-1",
+          correlationId: "customer-migration-run1-payrolls",
+        }),
+        externalTx,
+      );
+    });
+
+    it("preserves the original correlationId on the reversal entry", async () => {
+      const originalRow = {
+        id: "le-orig-2",
+        debitAccountId: ACCOUNT_IDS.cash,
+        creditAccountId: ACCOUNT_IDS.accounts_receivable,
+        amountCents: 3000,
+        currency: "usd",
+        referenceType: "migration",
+        referenceId: "inv-2",
+        description: "payment",
+        correlationId: "orig-correlation-xyz",
+        createdAt: new Date(),
+      };
+
+      await service.recordReversedEntry(
+        originalRow as never,
+        { tx: 1 } as never,
+      );
+
+      const call = mockLedgerEntriesRepo.createInTx.mock.calls.at(-1);
+      expect(call?.[0].correlationId).toBe("orig-correlation-xyz");
+    });
+
+    it("prefixes description with 'Rollback of migration entry:'", async () => {
+      const originalRow = {
+        id: "le-orig-3",
+        debitAccountId: ACCOUNT_IDS.accounts_receivable,
+        creditAccountId: ACCOUNT_IDS.revenue,
+        amountCents: 1000,
+        currency: "usd",
+        referenceType: "migration",
+        referenceId: "inv-3",
+        description: "Historical migration from monolith payroll #zzz",
+        correlationId: "corr",
+        createdAt: new Date(),
+      };
+
+      await service.recordReversedEntry(
+        originalRow as never,
+        { tx: 1 } as never,
+      );
+
+      const call = mockLedgerEntriesRepo.createInTx.mock.calls.at(-1);
+      expect(
+        (call?.[0].description as string).startsWith(
+          "Rollback of migration entry:",
+        ),
+      ).toBe(true);
+      expect(call?.[0].description).toContain(
+        "Historical migration from monolith payroll #zzz",
+      );
+    });
+  });
+
   describe("amount consistency", () => {
     it("should use the same amount_cents for debit and credit in a single entry", async () => {
       await service.recordInvoiceFinalized("inv-100", 99999, "usd", "corr-x");
