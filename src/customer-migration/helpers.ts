@@ -34,6 +34,11 @@ export type StepResult =
       data?: Record<string, unknown>;
       dryRun?: boolean;
       planned?: Record<string, unknown>;
+      // Optional on `succeeded` purely so test assertions like
+      // `expect(result.reason).toBe("...")` after `status==='skipped'` checks
+      // don't trip the TS narrowing (jest's expect is not a type guard).
+      // Production code never sets `reason` on a succeeded result.
+      reason?: string;
     }
   | { status: "skipped"; reason: string; data?: Record<string, unknown> }
   | { status: "failed"; reason: string; error?: string };

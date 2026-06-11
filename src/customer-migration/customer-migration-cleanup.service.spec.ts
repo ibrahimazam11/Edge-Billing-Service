@@ -204,8 +204,10 @@ describe("CustomerMigrationCleanupService", () => {
     );
     const invoiceArg = args.find((a: LedgerRow) => a.id === "le-1");
     const cnArg = args.find((a: LedgerRow) => a.id === "le-2");
-    expect(invoiceArg.correlationId).toBe("customer-migration-runX-payrolls");
-    expect(cnArg.correlationId).toBe("customer-migration-runX-credit-balance");
+    expect(invoiceArg).toBeDefined();
+    expect(cnArg).toBeDefined();
+    expect(invoiceArg!.correlationId).toBe("customer-migration-runX-payrolls");
+    expect(cnArg!.correlationId).toBe("customer-migration-runX-credit-balance");
   });
 
   it("logs status='rolled_back' on success", async () => {
