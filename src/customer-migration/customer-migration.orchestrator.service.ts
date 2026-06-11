@@ -138,7 +138,8 @@ export class CustomerMigrationOrchestratorService {
     // Bug 3 fix: when paymentSettings failed in dry-run, fall back to the
     // placeholder so subsequent writers still get called for the preview.
     const billingCustomerId =
-      psResult.billingCustomerId ?? (dryRun ? DRY_RUN_PLACEHOLDER_ID : undefined);
+      psResult.billingCustomerId ??
+      (dryRun ? DRY_RUN_PLACEHOLDER_ID : undefined);
 
     if (!billingCustomerId) {
       // Shouldn't happen — failed path already returned above; skipped path has id.
@@ -307,7 +308,9 @@ export class CustomerMigrationOrchestratorService {
     return {
       status: "succeeded",
       billingCustomerId:
-        billingCustomerId === DRY_RUN_PLACEHOLDER_ID ? undefined : billingCustomerId,
+        billingCustomerId === DRY_RUN_PLACEHOLDER_ID
+          ? undefined
+          : billingCustomerId,
       runId,
       stepResults,
     };
@@ -323,8 +326,7 @@ export class CustomerMigrationOrchestratorService {
   ): OrchestratorResult {
     const safeReason =
       result.status === "failed" ? result.reason : "unknown_failure";
-    const safeError =
-      result.status === "failed" ? result.error : undefined;
+    const safeError = result.status === "failed" ? result.error : undefined;
 
     void this.safeLog({
       runId,
@@ -353,9 +355,9 @@ export class CustomerMigrationOrchestratorService {
     return s;
   }
 
-  private async safeLog(params: Parameters<
-    CustomerMigrationLogsRepository["writeStepLog"]
-  >[0]): Promise<void> {
+  private async safeLog(
+    params: Parameters<CustomerMigrationLogsRepository["writeStepLog"]>[0],
+  ): Promise<void> {
     try {
       await this.logsRepository.writeStepLog(params);
     } catch (err) {

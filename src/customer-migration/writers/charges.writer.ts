@@ -232,10 +232,7 @@ export class ChargesWriter {
       // P10: always use monolith-authoritative totalCents as the invoice
       // total. When line items are present, cross-check the sum and warn on
       // mismatch beyond ±1¢ — do NOT silently substitute lineItemSum.
-      if (
-        lineItemRows.length > 0 &&
-        Math.abs(lineItemSum - totalCents) > 1
-      ) {
+      if (lineItemRows.length > 0 && Math.abs(lineItemSum - totalCents) > 1) {
         this.logger.warn({
           action: "charges.writer.line_item_sum_mismatch",
           monolithChargeId: charge.chargeId,
@@ -246,14 +243,14 @@ export class ChargesWriter {
       }
       const absTotalCents = Math.abs(totalCents);
 
-      const invoiceType = charge.chargeType === "ONBOARDING" ? "onboarding" : "one_time";
+      const invoiceType =
+        charge.chargeType === "ONBOARDING" ? "onboarding" : "one_time";
 
       const paymentDate = charge.paymentDate
         ? new Date(charge.paymentDate)
         : null;
       // P4
-      const paidAt =
-        statusMap.invoiceStatus === "paid" ? paymentDate : null;
+      const paidAt = statusMap.invoiceStatus === "paid" ? paymentDate : null;
       const voidedAt =
         statusMap.invoiceStatus === "void" && charge.deletedAt
           ? new Date(charge.deletedAt)

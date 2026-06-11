@@ -67,7 +67,9 @@ export class SurchargeConfigInputDto {
 export class LatestPayrollInputDto {
   @IsString() @IsNotEmpty() totalAmount!: string;
 
-  @IsOptional() @IsString() @Length(3, 3)
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
   localCurrency?: string | null;
 
   @IsOptional() @IsString() startingBalance?: string | null;
@@ -106,7 +108,9 @@ export class PayrollInputDto {
 
   @IsOptional() @IsString() creditCardSurcharge?: string | null;
 
-  @IsOptional() @IsString() @Length(3, 3)
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
   localCurrency?: string | null;
 
   @IsOptional() @IsDateString() deletedAt?: string | null;

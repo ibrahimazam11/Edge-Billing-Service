@@ -190,20 +190,22 @@ describe("CustomerMigrationCleanupService", () => {
     const r = await svc.rollback("mono-1");
     expect(r.status).toBe("succeeded");
     expect(mockLedger.recordReversedEntry).toHaveBeenCalledTimes(2);
-    const args = mockLedger.recordReversedEntry.mock.calls.map((c) => c[0]);
+    const args = mockLedger.recordReversedEntry.mock.calls.map(
+      (c: unknown[]) => c[0] as LedgerRow,
+    );
     expect(args.some((a: LedgerRow) => a.id === "le-1")).toBe(true);
     expect(args.some((a: LedgerRow) => a.id === "le-2")).toBe(true);
   });
 
   it("B4: preserves the original correlationId via the original row (passed unchanged)", async () => {
     await svc.rollback("mono-1");
-    const args = mockLedger.recordReversedEntry.mock.calls.map((c) => c[0]);
+    const args = mockLedger.recordReversedEntry.mock.calls.map(
+      (c: unknown[]) => c[0] as LedgerRow,
+    );
     const invoiceArg = args.find((a: LedgerRow) => a.id === "le-1");
     const cnArg = args.find((a: LedgerRow) => a.id === "le-2");
     expect(invoiceArg.correlationId).toBe("customer-migration-runX-payrolls");
-    expect(cnArg.correlationId).toBe(
-      "customer-migration-runX-credit-balance",
-    );
+    expect(cnArg.correlationId).toBe("customer-migration-runX-credit-balance");
   });
 
   it("logs status='rolled_back' on success", async () => {
@@ -290,8 +292,8 @@ describe("CustomerMigrationCleanupService", () => {
     expect(mockLedger.recordReversedEntry).toHaveBeenCalledTimes(5);
 
     // Compute the implied reversals: swap debit/credit, same amount.
-    const reversedRows: LedgerRow[] = mockLedger.recordReversedEntry.mock.calls.map(
-      (c) => {
+    const reversedRows: LedgerRow[] =
+      mockLedger.recordReversedEntry.mock.calls.map((c) => {
         const orig = c[0] as LedgerRow;
         return {
           ...orig,
@@ -299,8 +301,7 @@ describe("CustomerMigrationCleanupService", () => {
           debitAccountId: orig.creditAccountId,
           creditAccountId: orig.debitAccountId,
         };
-      },
-    );
+      });
 
     const allRows = [...ledgerRows, ...reversedRows];
     const balances = new Map<string, number>();

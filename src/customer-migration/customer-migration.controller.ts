@@ -39,7 +39,9 @@ export class CustomerMigrationController {
 
   @Post(":monolithCustomerId")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Push-migrate a single customer to billing service" })
+  @ApiOperation({
+    summary: "Push-migrate a single customer to billing service",
+  })
   @ApiOkResponse({ description: "Migration result with per-step status" })
   async migrate(
     @Param("monolithCustomerId") monolithCustomerId: string,

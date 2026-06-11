@@ -42,7 +42,9 @@ describe("PayrollsWriter", () => {
 
   beforeEach(() => {
     inserts = [];
-    mockInvoicesRepo = { findByMonolithMetadata: jest.fn().mockResolvedValue(null) };
+    mockInvoicesRepo = {
+      findByMonolithMetadata: jest.fn().mockResolvedValue(null),
+    };
     mockPmRepo = {
       findAllByCustomerUnfiltered: jest
         .fn()
@@ -54,7 +56,7 @@ describe("PayrollsWriter", () => {
       recordInvoiceVoided: jest.fn().mockResolvedValue("ledger-void"),
     };
     const tx = {
-      insert: jest.fn((tbl: { _: { name: string } } | unknown) => ({
+      insert: jest.fn((tbl: unknown) => ({
         values: jest.fn((v: Record<string, unknown>) => {
           const tableName =
             (tbl as { _?: { name?: string } })?._?.name ?? "unknown";
@@ -122,7 +124,8 @@ describe("PayrollsWriter", () => {
   it("P10: line items sum to 100.00 but totalAmount=101.00 → invoice uses authoritative totalCents and warns", async () => {
     const warnSpy = jest
       .spyOn(
-        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } })
+          .logger,
         "warn",
       )
       .mockImplementation(() => undefined);
@@ -186,7 +189,9 @@ describe("PayrollsWriter", () => {
       { dryRun: true, runId: "r1" },
     );
     expect(result.status).toBe("succeeded");
-    const details = (result as { details?: Array<{ status: string; reason?: string }> }).details!;
+    const details = (
+      result as { details?: Array<{ status: string; reason?: string }> }
+    ).details!;
     expect(details).toHaveLength(1);
     expect(details[0]?.status).toBe("skipped");
     expect(details[0]?.reason).toBe("already_migrated");
@@ -239,7 +244,9 @@ describe("PayrollsWriter", () => {
       (i) => (i.values as { type?: string }).type === "recurring",
     );
     expect(invoiceInsert).toBeDefined();
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.creditAdjustmentCents).toBe(-2550);
     expect(meta.monolith_invoice_id).toBe("in_mono_1");
     expect(meta.monolith_invoice_url).toBe("https://stripe.example/in_mono_1");
@@ -255,7 +262,9 @@ describe("PayrollsWriter", () => {
     const invoiceInsert = inserts.find(
       (i) => (i.values as { type?: string }).type === "recurring",
     );
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.creditAdjustmentCents).toBeNull();
     expect(meta.monolith_invoice_id).toBeNull();
   });
@@ -270,7 +279,9 @@ describe("PayrollsWriter", () => {
       (i) => (i.values as { type?: string }).type === "employee_cost",
     );
     expect(lineItem).toBeDefined();
-    const breakdown = (lineItem!.values as { breakdown: Record<string, unknown> }).breakdown;
+    const breakdown = (
+      lineItem!.values as { breakdown: Record<string, unknown> }
+    ).breakdown;
     expect(breakdown.baseSalaryCents).toBe(100000);
     expect(breakdown.paidGrossSalaryCents).toBe(90000);
     expect(breakdown.bonusCents).toBe(5000);
@@ -301,14 +312,20 @@ describe("PayrollsWriter", () => {
       (i) => (i.values as { type?: string }).type === "recurring",
     );
     expect(invoiceInsert).toBeDefined();
-    expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
+    expect((invoiceInsert!.values as { status: string }).status).toBe(
+      "finalized",
+    );
     expect((invoiceInsert!.values as { paidAt: unknown }).paidAt).toBeNull();
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.monolith_original_status).toBe("un-paid");
     // No charge row should be inserted — un-paid placeholder never had a Stripe charge.
-    const chargeInsert = inserts.find((i) =>
-      ["charges"].includes(i.table) ||
-      ((i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined),
+    const chargeInsert = inserts.find(
+      (i) =>
+        ["charges"].includes(i.table) ||
+        (i.values as { stripePaymentIntentId?: unknown })
+          .stripePaymentIntentId !== undefined,
     );
     expect(chargeInsert).toBeUndefined();
     // Ledger should record the finalize entry (single AR record, no payment).
@@ -335,11 +352,17 @@ describe("PayrollsWriter", () => {
     const invoiceInsert = inserts.find(
       (i) => (i.values as { type?: string }).type === "recurring",
     );
-    expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    expect((invoiceInsert!.values as { status: string }).status).toBe(
+      "finalized",
+    );
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.monolith_original_status).toBe("unpaid");
-    const chargeInsert = inserts.find((i) =>
-      ((i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined),
+    const chargeInsert = inserts.find(
+      (i) =>
+        (i.values as { stripePaymentIntentId?: unknown })
+          .stripePaymentIntentId !== undefined,
     );
     expect(chargeInsert).toBeUndefined();
   });
@@ -363,12 +386,18 @@ describe("PayrollsWriter", () => {
     const invoiceInsert = inserts.find(
       (i) => (i.values as { type?: string }).type === "recurring",
     );
-    expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    expect((invoiceInsert!.values as { status: string }).status).toBe(
+      "finalized",
+    );
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.monolith_original_status).toBe("pending");
     // pending DOES create a charge row (charge in flight).
     const chargeInsert = inserts.find(
-      (i) => (i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined,
+      (i) =>
+        (i.values as { stripePaymentIntentId?: unknown })
+          .stripePaymentIntentId !== undefined,
     );
     expect(chargeInsert).toBeDefined();
     expect((chargeInsert!.values as { status: string }).status).toBe("pending");
@@ -393,7 +422,9 @@ describe("PayrollsWriter", () => {
       (i) => (i.values as { type?: string }).type === "recurring",
     );
     expect((invoiceInsert!.values as { status: string }).status).toBe("paid");
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.monolith_original_status).toBe("paid");
   });
 
@@ -412,7 +443,9 @@ describe("PayrollsWriter", () => {
       { dryRun: false, runId: "r1" },
     );
     expect(r.status).toBe("succeeded");
-    const details = (r as { details?: Array<{ status: string; reason?: string }> }).details!;
+    const details = (
+      r as { details?: Array<{ status: string; reason?: string }> }
+    ).details!;
     expect(details).toHaveLength(1);
     expect(details[0]?.status).toBe("skipped");
     expect(details[0]?.reason).toBe("unknown_status");
@@ -447,17 +480,23 @@ describe("PayrollsWriter", () => {
         (i) => (i.values as { type?: string }).type === "recurring",
       );
       expect(invoiceInsert).toBeDefined();
-      expect((invoiceInsert!.values as { status: string }).status).toBe("draft");
+      expect((invoiceInsert!.values as { status: string }).status).toBe(
+        "draft",
+      );
       // No charge row (createCharge: false).
       const chargeInsert = inserts.find(
-        (i) => (i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined,
+        (i) =>
+          (i.values as { stripePaymentIntentId?: unknown })
+            .stripePaymentIntentId !== undefined,
       );
       expect(chargeInsert).toBeUndefined();
       // No ledger entries (ledgerPairCount: 0).
       expect(mockLedger.recordMigrationPayrollFinalized).not.toHaveBeenCalled();
       expect(mockLedger.recordMigrationPayrollPayment).not.toHaveBeenCalled();
       // Metadata still stamped for adapter consistency.
-      const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+      const meta = (
+        invoiceInsert!.values as { metadata: Record<string, unknown> }
+      ).metadata;
       expect(meta.monolith_original_status).toBe("un-paid");
     } finally {
       jest.useRealTimers();
@@ -486,12 +525,18 @@ describe("PayrollsWriter", () => {
       const invoiceInsert = inserts.find(
         (i) => (i.values as { type?: string }).type === "recurring",
       );
-      expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
+      expect((invoiceInsert!.values as { status: string }).status).toBe(
+        "finalized",
+      );
       const chargeInsert = inserts.find(
-        (i) => (i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined,
+        (i) =>
+          (i.values as { stripePaymentIntentId?: unknown })
+            .stripePaymentIntentId !== undefined,
       );
       expect(chargeInsert).toBeUndefined();
-      expect(mockLedger.recordMigrationPayrollFinalized).toHaveBeenCalledTimes(1);
+      expect(mockLedger.recordMigrationPayrollFinalized).toHaveBeenCalledTimes(
+        1,
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -520,13 +565,19 @@ describe("PayrollsWriter", () => {
       const invoiceInsert = inserts.find(
         (i) => (i.values as { type?: string }).type === "recurring",
       );
-      expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
+      expect((invoiceInsert!.values as { status: string }).status).toBe(
+        "finalized",
+      );
       // Failure branch creates a failed charge row.
       const chargeInsert = inserts.find(
-        (i) => (i.values as { stripePaymentIntentId?: unknown }).stripePaymentIntentId !== undefined,
+        (i) =>
+          (i.values as { stripePaymentIntentId?: unknown })
+            .stripePaymentIntentId !== undefined,
       );
       expect(chargeInsert).toBeDefined();
-      expect((chargeInsert!.values as { status: string }).status).toBe("failed");
+      expect((chargeInsert!.values as { status: string }).status).toBe(
+        "failed",
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -554,7 +605,9 @@ describe("PayrollsWriter", () => {
       const invoiceInsert = inserts.find(
         (i) => (i.values as { type?: string }).type === "recurring",
       );
-      expect((invoiceInsert!.values as { status: string }).status).toBe("finalized");
+      expect((invoiceInsert!.values as { status: string }).status).toBe(
+        "finalized",
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -579,7 +632,9 @@ describe("PayrollsWriter", () => {
     const invoiceInsert = inserts.find(
       (i) => (i.values as { type?: string }).type === "recurring",
     );
-    const meta = (invoiceInsert!.values as { metadata: Record<string, unknown> }).metadata;
+    const meta = (
+      invoiceInsert!.values as { metadata: Record<string, unknown> }
+    ).metadata;
     expect(meta.monolith_original_status).toBe("pending");
   });
 });

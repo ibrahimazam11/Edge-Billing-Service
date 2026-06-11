@@ -1,4 +1,8 @@
-import { SubscriptionWriter, computeBillingCycle, computeDueDate } from "./subscription.writer";
+import {
+  SubscriptionWriter,
+  computeBillingCycle,
+  computeDueDate,
+} from "./subscription.writer";
 import type { SubscriptionsRepository } from "../../subscriptions/subscriptions.repository";
 import type { CustomersRepository } from "../../customers/customers.repository";
 
@@ -359,8 +363,16 @@ describe("SubscriptionWriter", () => {
 
   it("P11: fails multiple_active_subscriptions when more than one active sub exists", async () => {
     mockSubsRepo.findByCustomerAndStatuses.mockResolvedValueOnce([
-      { id: "sub-A", status: "active", metadata: { monolith_subscription_id: "sub_xyz" } },
-      { id: "sub-B", status: "active", metadata: { monolith_subscription_id: "sub_xyz" } },
+      {
+        id: "sub-A",
+        status: "active",
+        metadata: { monolith_subscription_id: "sub_xyz" },
+      },
+      {
+        id: "sub-B",
+        status: "active",
+        metadata: { monolith_subscription_id: "sub_xyz" },
+      },
     ]);
     const result = await writer.write(
       {
@@ -380,7 +392,11 @@ describe("SubscriptionWriter", () => {
 
   it("P11: fails incoming_subscription_id_null when body has null subscriptionId but active sub exists", async () => {
     mockSubsRepo.findByCustomerAndStatuses.mockResolvedValueOnce([
-      { id: "sub-A", status: "active", metadata: { monolith_subscription_id: "sub_xyz" } },
+      {
+        id: "sub-A",
+        status: "active",
+        metadata: { monolith_subscription_id: "sub_xyz" },
+      },
     ]);
     const result = await writer.write(
       {
@@ -468,7 +484,17 @@ describe("SubscriptionWriter", () => {
       { dryRun: true, runId: "r1" },
     );
     expect(result.status).toBe("succeeded");
-    const planned = (result as { planned?: { chargeDay: number; isPrepaid: boolean; billingPeriodStart: string; billingPeriodEnd: string; nextBillingDate: string } }).planned!;
+    const planned = (
+      result as {
+        planned?: {
+          chargeDay: number;
+          isPrepaid: boolean;
+          billingPeriodStart: string;
+          billingPeriodEnd: string;
+          nextBillingDate: string;
+        };
+      }
+    ).planned!;
     expect(planned.chargeDay).toBe(15);
     expect(planned.isPrepaid).toBe(false);
     // 15th→15th cycle, not 1st→1st.
@@ -500,15 +526,25 @@ describe("SubscriptionWriter", () => {
       { dryRun: true, runId: "r1" },
     );
     expect(result.status).toBe("succeeded");
-    const planned = (result as { planned?: { chargeDay: number; isPrepaid: boolean; billingPeriodStart: string; nextBillingDate: string } }).planned!;
+    const planned = (
+      result as {
+        planned?: {
+          chargeDay: number;
+          isPrepaid: boolean;
+          billingPeriodStart: string;
+          nextBillingDate: string;
+        };
+      }
+    ).planned!;
     expect(planned.chargeDay).toBe(28);
     expect(planned.isPrepaid).toBe(true);
     // billingPeriodStart: day normalized to 1 of next month.
     expect(planned.billingPeriodStart).toContain("-01T");
     // nextBillingDate: literal 28th of CURRENT month — BEFORE billingPeriodStart.
     expect(planned.nextBillingDate).toContain("-28T");
-    expect(new Date(planned.nextBillingDate).getTime())
-      .toBeLessThan(new Date(planned.billingPeriodStart).getTime());
+    expect(new Date(planned.nextBillingDate).getTime()).toBeLessThan(
+      new Date(planned.billingPeriodStart).getTime(),
+    );
   });
 
   it("P6: fails invalid_charge_day when chargeDay=32", async () => {

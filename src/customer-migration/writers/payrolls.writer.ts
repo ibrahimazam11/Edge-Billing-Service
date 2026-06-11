@@ -264,17 +264,11 @@ export class PayrollsWriter {
         });
       }
 
-      const lineItemSum = lineItemRows.reduce(
-        (s, l) => s + l.amountCents,
-        0,
-      );
+      const lineItemSum = lineItemRows.reduce((s, l) => s + l.amountCents, 0);
       // P10: always use monolith-authoritative totalCents as the invoice
       // total. When line items are present, cross-check the sum and warn on
       // mismatch beyond ±1¢ — do NOT silently substitute lineItemSum.
-      if (
-        lineItemRows.length > 0 &&
-        Math.abs(lineItemSum - totalCents) > 1
-      ) {
+      if (lineItemRows.length > 0 && Math.abs(lineItemSum - totalCents) > 1) {
         this.logger.warn({
           action: "payrolls.writer.line_item_sum_mismatch",
           monolithPayrollId: payroll.customerPayrollId,
@@ -368,7 +362,8 @@ export class PayrollsWriter {
               // Read by monolith billingServiceAdapter.statusForApi to preserve the
               // pre-migration API status contract (e.g. "pending"/"un-paid"/"paid"
               // stays surfaced as the same string post-migration).
-              monolith_original_status: (payroll.status ?? "").toLowerCase().trim() || null,
+              monolith_original_status:
+                (payroll.status ?? "").toLowerCase().trim() || null,
             },
             createdAt: now,
             updatedAt: now,

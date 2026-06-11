@@ -683,9 +683,11 @@ describe("LedgerService", () => {
       );
 
       const call = mockLedgerEntriesRepo.createInTx.mock.calls.at(-1);
-      expect((call?.[0].description as string).startsWith(
-        "Rollback of migration entry:",
-      )).toBe(true);
+      expect(
+        (call?.[0].description as string).startsWith(
+          "Rollback of migration entry:",
+        ),
+      ).toBe(true);
       expect(call?.[0].description).toContain(
         "Historical migration from monolith payroll #zzz",
       );

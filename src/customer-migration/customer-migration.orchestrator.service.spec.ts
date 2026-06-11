@@ -9,7 +9,9 @@ import type { SubscriptionWriter } from "./writers/subscription.writer";
 import type { CustomerMigrationLogsRepository } from "./customer-migration-logs.repository";
 import type { MigrateCustomerBodyDto } from "./dto/migrate-customer-body.dto";
 
-function makeBody(over: Partial<MigrateCustomerBodyDto> = {}): MigrateCustomerBodyDto {
+function makeBody(
+  over: Partial<MigrateCustomerBodyDto> = {},
+): MigrateCustomerBodyDto {
   return {
     customer: {
       monolithCustomerId: "mono-1",
@@ -51,16 +53,24 @@ describe("CustomerMigrationOrchestratorService", () => {
       }),
     };
     cbWriter = {
-      write: jest.fn().mockResolvedValue({ status: "skipped", reason: "no_credit" }),
+      write: jest
+        .fn()
+        .mockResolvedValue({ status: "skipped", reason: "no_credit" }),
     };
     surWriter = {
-      write: jest.fn().mockResolvedValue({ status: "skipped", reason: "no_config" }),
+      write: jest
+        .fn()
+        .mockResolvedValue({ status: "skipped", reason: "no_config" }),
     };
     payWriter = {
-      write: jest.fn().mockResolvedValue({ status: "skipped", reason: "no_payrolls" }),
+      write: jest
+        .fn()
+        .mockResolvedValue({ status: "skipped", reason: "no_payrolls" }),
     };
     chWriter = {
-      write: jest.fn().mockResolvedValue({ status: "skipped", reason: "no_charges" }),
+      write: jest
+        .fn()
+        .mockResolvedValue({ status: "skipped", reason: "no_charges" }),
     };
     subWriter = {
       write: jest.fn().mockResolvedValue({ status: "succeeded" }),

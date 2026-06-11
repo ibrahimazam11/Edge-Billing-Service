@@ -66,7 +66,7 @@ export function mapStripeSource(
       : (source.customer?.id ?? "");
 
   if (source.object === "bank_account") {
-    const ba = source as Stripe.BankAccount;
+    const ba = source;
     return {
       id: ba.id,
       customerId,
@@ -80,7 +80,7 @@ export function mapStripeSource(
     };
   }
   if (source.object === "card") {
-    const card = source as Stripe.Card;
+    const card = source;
     return {
       id: card.id,
       customerId,
@@ -94,7 +94,7 @@ export function mapStripeSource(
     };
   }
   // Stripe.Source (legacy Sources API). Type may be 'card', 'ach_credit_transfer', etc.
-  const src = source as Stripe.Source;
+  const src = source;
   const isCard = src.type === "card";
   return {
     id: src.id,

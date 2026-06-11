@@ -37,7 +37,11 @@ export class SurchargeWriter {
       surchargeValueCents = toCents(cfg.surchargeValue);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { status: "failed", reason: "invalid_surcharge_value", error: msg };
+      return {
+        status: "failed",
+        reason: "invalid_surcharge_value",
+        error: msg,
+      };
     }
 
     // Bug 2 fix: run idempotency check on both real-run AND dry-run so the

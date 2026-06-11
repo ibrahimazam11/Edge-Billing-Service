@@ -37,7 +37,10 @@ export class CreditNotesRepository extends BaseRepository<typeof creditNotes> {
       .select()
       .from(creditNotes)
       .where(
-        and(eq(creditNotes.customerId, customerId), eq(creditNotes.reason, reason)),
+        and(
+          eq(creditNotes.customerId, customerId),
+          eq(creditNotes.reason, reason),
+        ),
       )
       .limit(1);
     return row ?? null;

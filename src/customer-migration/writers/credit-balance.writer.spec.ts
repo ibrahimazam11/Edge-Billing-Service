@@ -1,4 +1,7 @@
-import { CreditBalanceWriter, MIGRATION_CREDIT_REASON } from "./credit-balance.writer";
+import {
+  CreditBalanceWriter,
+  MIGRATION_CREDIT_REASON,
+} from "./credit-balance.writer";
 import type { CreditsService } from "../../credits/credits.service";
 import type { CreditNotesRepository } from "../../credits/credit-notes.repository";
 

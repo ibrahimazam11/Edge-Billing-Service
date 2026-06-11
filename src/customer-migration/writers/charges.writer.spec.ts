@@ -119,7 +119,8 @@ describe("ChargesWriter", () => {
   it("P10: line items sum to 100.00 but totalAmount=101.00 → invoice uses authoritative totalCents and warns", async () => {
     const warnSpy = jest
       .spyOn(
-        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } })
+          .logger,
         "warn",
       )
       .mockImplementation(() => undefined);
@@ -129,9 +130,7 @@ describe("ChargesWriter", () => {
         charges: [
           makeCharge({
             amount: "101.00",
-            lineItems: [
-              { fee: "100.00", employeeName: "Alice" } as never,
-            ],
+            lineItems: [{ fee: "100.00", employeeName: "Alice" } as never],
           }),
         ],
       },
@@ -165,7 +164,9 @@ describe("ChargesWriter", () => {
       { dryRun: true, runId: "r1" },
     );
     expect(result.status).toBe("succeeded");
-    const details = (result as { details?: Array<{ status: string; reason?: string }> }).details!;
+    const details = (
+      result as { details?: Array<{ status: string; reason?: string }> }
+    ).details!;
     expect(details).toHaveLength(1);
     expect(details[0]?.status).toBe("skipped");
     expect(details[0]?.reason).toBe("already_migrated");

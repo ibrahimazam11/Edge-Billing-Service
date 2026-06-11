@@ -47,7 +47,12 @@ jest.mock("stripe", () => {
 describe("StripeAdapter", () => {
   let adapter: StripeAdapter;
   let mockStripeInstance: {
-    customers: { create: jest.Mock; update: jest.Mock; retrieve: jest.Mock; listSources: jest.Mock };
+    customers: {
+      create: jest.Mock;
+      update: jest.Mock;
+      retrieve: jest.Mock;
+      listSources: jest.Mock;
+    };
     paymentMethods: { attach: jest.Mock; detach: jest.Mock; list: jest.Mock };
     paymentIntents: { create: jest.Mock };
     refunds: { create: jest.Mock };

@@ -118,11 +118,14 @@ describe("PaymentSettingsWriter", () => {
     );
     expect(result.status).toBe("succeeded");
     const pmInsert = inserts.find(
-      (i) => (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId === "pm_default",
+      (i) =>
+        (i.values as { stripePaymentMethodId?: string })
+          .stripePaymentMethodId === "pm_default",
     );
     expect(pmInsert).toBeDefined();
     expect(
-      (pmInsert!.values as { metadata: { mandate_id?: string } | null }).metadata,
+      (pmInsert!.values as { metadata: { mandate_id?: string } | null })
+        .metadata,
     ).toEqual({ mandate_id: "mandate_abc" });
   });
 
@@ -140,12 +143,12 @@ describe("PaymentSettingsWriter", () => {
     );
     expect(result.status).toBe("succeeded");
     const pmInsert = inserts.find(
-      (i) => (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId === "pm_default",
+      (i) =>
+        (i.values as { stripePaymentMethodId?: string })
+          .stripePaymentMethodId === "pm_default",
     );
     expect(pmInsert).toBeDefined();
-    expect(
-      (pmInsert!.values as { metadata: unknown }).metadata,
-    ).toBeNull();
+    expect((pmInsert!.values as { metadata: unknown }).metadata).toBeNull();
   });
 
   it("Bug 2 fix: dry-run on already-migrated customer returns already_migrated", async () => {

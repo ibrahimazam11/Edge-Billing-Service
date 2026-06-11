@@ -176,7 +176,9 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
         pmStartingAfter = page.data[page.data.length - 1].id;
       }
 
-      const sourceObjects: Array<Stripe.BankAccount | Stripe.Card | Stripe.Source> = [];
+      const sourceObjects: Array<
+        Stripe.BankAccount | Stripe.Card | Stripe.Source
+      > = [];
       let srcStartingAfter: string | undefined;
       while (true) {
         const page = await this.stripe.customers.listSources(customerId, {
@@ -184,7 +186,9 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
           ...(srcStartingAfter ? { starting_after: srcStartingAfter } : {}),
         });
         sourceObjects.push(
-          ...(page.data as Array<Stripe.BankAccount | Stripe.Card | Stripe.Source>),
+          ...(page.data as Array<
+            Stripe.BankAccount | Stripe.Card | Stripe.Source
+          >),
         );
         if (!page.has_more || page.data.length === 0) break;
         srcStartingAfter = page.data[page.data.length - 1].id;

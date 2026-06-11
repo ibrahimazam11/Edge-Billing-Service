@@ -29,7 +29,12 @@ export function toCentsOrNull(
 }
 
 export type StepResult =
-  | { status: "succeeded"; data?: Record<string, unknown>; dryRun?: boolean; planned?: Record<string, unknown> }
+  | {
+      status: "succeeded";
+      data?: Record<string, unknown>;
+      dryRun?: boolean;
+      planned?: Record<string, unknown>;
+    }
   | { status: "skipped"; reason: string; data?: Record<string, unknown> }
   | { status: "failed"; reason: string; error?: string };
 

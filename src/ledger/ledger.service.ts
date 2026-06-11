@@ -306,9 +306,7 @@ export class LedgerService implements OnModuleInit {
 
     await this.ledgerEntriesRepo.createInTx(
       entryData,
-      tx as unknown as Parameters<
-        typeof this.ledgerEntriesRepo.createInTx
-      >[1],
+      tx as unknown as Parameters<typeof this.ledgerEntriesRepo.createInTx>[1],
     );
 
     this.logger.log({

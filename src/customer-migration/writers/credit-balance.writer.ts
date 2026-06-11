@@ -78,11 +78,10 @@ export class CreditBalanceWriter {
     // Skip the lookup — there is by definition nothing to be idempotent against
     // when no BS customer exists yet.
     if (input.billingCustomerId !== DRY_RUN_PLACEHOLDER_ID) {
-      const existing =
-        await this.creditNotesRepository.findByCustomerAndReason(
-          input.billingCustomerId,
-          MIGRATION_CREDIT_REASON,
-        );
+      const existing = await this.creditNotesRepository.findByCustomerAndReason(
+        input.billingCustomerId,
+        MIGRATION_CREDIT_REASON,
+      );
       if (existing) {
         return { status: "skipped", reason: "already_migrated" };
       }
@@ -128,7 +127,11 @@ export class CreditBalanceWriter {
         billingCustomerId: input.billingCustomerId,
         error: msg,
       });
-      return { status: "failed", reason: "issue_credit_note_failed", error: msg };
+      return {
+        status: "failed",
+        reason: "issue_credit_note_failed",
+        error: msg,
+      };
     }
   }
 }
