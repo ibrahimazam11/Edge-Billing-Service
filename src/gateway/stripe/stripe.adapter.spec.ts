@@ -549,6 +549,93 @@ describe("StripeAdapter", () => {
       expect(result.failureCode).toBe("card_declined");
       expect(result.failureMessage).toBe("Card was declined");
     });
+
+    it("forwards mandate to Stripe when mandateId is provided (ACH)", async () => {
+      mockStripeInstance.paymentIntents.create.mockResolvedValue(
+        makeStripePaymentIntent(),
+      );
+
+      await adapter.createCharge({
+        amount: 5000,
+        currency: "usd",
+        customerId: "cus_123",
+        paymentMethodId: "pm_bank_1",
+        mandateId: "mandate_xyz",
+      });
+
+      expect(mockStripeInstance.paymentIntents.create).toHaveBeenCalledWith(
+        expect.objectContaining({ mandate: "mandate_xyz" }),
+        undefined,
+      );
+    });
+
+    it("sets off_session true for ACH charges (merchant-initiated, mandate present)", async () => {
+      mockStripeInstance.paymentIntents.create.mockResolvedValue(
+        makeStripePaymentIntent(),
+      );
+
+      await adapter.createCharge({
+        amount: 5000,
+        currency: "usd",
+        customerId: "cus_123",
+        paymentMethodId: "pm_bank_1",
+        mandateId: "mandate_xyz",
+      });
+
+      expect(mockStripeInstance.paymentIntents.create).toHaveBeenCalledWith(
+        expect.objectContaining({ off_session: true }),
+        undefined,
+      );
+    });
+
+    it("does not set off_session for card charges (no mandate)", async () => {
+      mockStripeInstance.paymentIntents.create.mockResolvedValue(
+        makeStripePaymentIntent(),
+      );
+
+      await adapter.createCharge({
+        amount: 5000,
+        currency: "usd",
+        customerId: "cus_123",
+        paymentMethodId: "pm_card_1",
+      });
+
+      const params = mockStripeInstance.paymentIntents.create.mock.calls[0][0];
+      expect(params.off_session).toBeUndefined();
+    });
+
+    it("omits mandate from Stripe params when mandateId is absent (cards)", async () => {
+      mockStripeInstance.paymentIntents.create.mockResolvedValue(
+        makeStripePaymentIntent(),
+      );
+
+      await adapter.createCharge({
+        amount: 5000,
+        currency: "usd",
+        customerId: "cus_123",
+        paymentMethodId: "pm_card_1",
+      });
+
+      const params = mockStripeInstance.paymentIntents.create.mock.calls[0][0];
+      expect(params).not.toHaveProperty("mandate");
+    });
+
+    it("omits mandate when mandateId is explicitly null", async () => {
+      mockStripeInstance.paymentIntents.create.mockResolvedValue(
+        makeStripePaymentIntent(),
+      );
+
+      await adapter.createCharge({
+        amount: 5000,
+        currency: "usd",
+        customerId: "cus_123",
+        paymentMethodId: "pm_card_2",
+        mandateId: null,
+      });
+
+      const params = mockStripeInstance.paymentIntents.create.mock.calls[0][0];
+      expect(params).not.toHaveProperty("mandate");
+    });
   });
 
   describe("createRefund", () => {

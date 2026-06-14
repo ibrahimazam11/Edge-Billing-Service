@@ -303,6 +303,20 @@ describe("PaymentMethodsService", () => {
         }),
       );
     });
+
+    it("rejects Stripe bank_account PMs — must go through SetupIntent flow for mandate", async () => {
+      mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
+      mockGatewayAssignmentsRepo.findByCustomer.mockResolvedValueOnce([]);
+      mockGateway.attachPaymentMethod.mockResolvedValue(
+        makeGatewayResult({ type: "us_bank_account" }),
+      );
+
+      await expect(
+        service.attach("cust-uuid-1", { paymentMethodId: "pm_bank_1" }),
+      ).rejects.toThrow(BusinessRuleViolationException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
   });
 
   describe("detach", () => {
@@ -931,6 +945,174 @@ describe("PaymentMethodsService", () => {
       expect(mockGatewayRegistry.getAdapter).toHaveBeenCalledWith(
         GatewayProvider.Adyen,
       );
+    });
+  });
+
+  describe("confirmSetupAndAttach", () => {
+    // Attach SetupIntent-flow mocks onto the shared mockGateway. They live on the
+    // SetupIntentGateway interface, which is cast-to via `as unknown` in the service.
+    const setupGatewayMocks = () => {
+      const gateway = mockGateway as unknown as Record<string, jest.Mock>;
+      gateway.retrieveSetupIntent = jest.fn();
+      gateway.confirmSetup = jest.fn();
+      return gateway;
+    };
+
+    beforeEach(() => {
+      mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
+      mockGatewayAssignmentsRepo.findByCustomerAndProvider.mockResolvedValue({
+        gatewayCustomerId: "cus_stripe_1",
+      });
+      repo.getDefaultPaymentMethod.mockResolvedValue(null); // no prior default
+      mockGateway.setDefaultPaymentMethod.mockResolvedValue(undefined as never);
+      mockGateway.listPaymentMethods.mockResolvedValue([]);
+    });
+
+    it("persists mandate_id in metadata for bank_account with mandate", async () => {
+      const gateway = setupGatewayMocks();
+      gateway.retrieveSetupIntent.mockResolvedValue({
+        id: "seti_1",
+        status: "succeeded",
+        paymentMethodId: "pm_bank_1",
+        mandateId: "mandate_abc",
+        clientSecret: null,
+      });
+      mockGateway.listPaymentMethods.mockResolvedValue([
+        {
+          id: "pm_bank_1",
+          type: "us_bank_account",
+          last4: "6789",
+          brand: null,
+          bankName: "Chase",
+          expiryMonth: null,
+          expiryYear: null,
+        } as never,
+      ]);
+      repo.create.mockResolvedValue(
+        makePaymentMethodRow({
+          id: "pm-uuid-bank",
+          stripePaymentMethodId: "pm_bank_1",
+          type: "bank_account",
+          bankName: "Chase",
+          metadata: { mandate_id: "mandate_abc" },
+        }),
+      );
+
+      await service.confirmSetupAndAttach("cust-uuid-1", "seti_1");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stripePaymentMethodId: "pm_bank_1",
+          type: "bank_account",
+          metadata: { mandate_id: "mandate_abc" },
+        }),
+      );
+    });
+
+    it("persists null metadata for bank_account without mandate", async () => {
+      const gateway = setupGatewayMocks();
+      gateway.retrieveSetupIntent.mockResolvedValue({
+        id: "seti_1",
+        status: "succeeded",
+        paymentMethodId: "pm_bank_2",
+        mandateId: null,
+        clientSecret: null,
+      });
+      mockGateway.listPaymentMethods.mockResolvedValue([
+        {
+          id: "pm_bank_2",
+          type: "us_bank_account",
+          last4: "1111",
+          brand: null,
+          bankName: null,
+          expiryMonth: null,
+          expiryYear: null,
+        } as never,
+      ]);
+      repo.create.mockResolvedValue(
+        makePaymentMethodRow({
+          stripePaymentMethodId: "pm_bank_2",
+          type: "bank_account",
+        }),
+      );
+
+      await service.confirmSetupAndAttach("cust-uuid-1", "seti_1");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stripePaymentMethodId: "pm_bank_2",
+          type: "bank_account",
+          metadata: null,
+        }),
+      );
+    });
+
+    it("never persists mandate metadata for cards even if mandateId present", async () => {
+      const gateway = setupGatewayMocks();
+      gateway.retrieveSetupIntent.mockResolvedValue({
+        id: "seti_2",
+        status: "succeeded",
+        paymentMethodId: "pm_card_1",
+        // Defensive: cards in our flow shouldn't carry a mandate, but guard anyway.
+        mandateId: "mandate_should_be_ignored",
+        clientSecret: null,
+      });
+      mockGateway.listPaymentMethods.mockResolvedValue([
+        {
+          id: "pm_card_1",
+          type: "card",
+          last4: "4242",
+          brand: "visa",
+          bankName: null,
+          expiryMonth: 12,
+          expiryYear: 2030,
+        } as never,
+      ]);
+      repo.create.mockResolvedValue(
+        makePaymentMethodRow({
+          stripePaymentMethodId: "pm_card_1",
+          type: "card",
+        }),
+      );
+
+      await service.confirmSetupAndAttach("cust-uuid-1", "seti_2");
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stripePaymentMethodId: "pm_card_1",
+          type: "card",
+          metadata: null,
+        }),
+      );
+    });
+
+    it("throws when listPaymentMethods does not return the attached PM (no silent mis-typing)", async () => {
+      const gateway = setupGatewayMocks();
+      gateway.retrieveSetupIntent.mockResolvedValue({
+        id: "seti_3",
+        status: "succeeded",
+        paymentMethodId: "pm_missing",
+        mandateId: "mandate_xxx",
+        clientSecret: null,
+      });
+      // Stripe list returns a different PM — find() yields undefined
+      mockGateway.listPaymentMethods.mockResolvedValue([
+        {
+          id: "pm_other",
+          type: "card",
+          last4: "1111",
+          brand: "visa",
+          bankName: null,
+          expiryMonth: 1,
+          expiryYear: 2030,
+        } as never,
+      ]);
+
+      await expect(
+        service.confirmSetupAndAttach("cust-uuid-1", "seti_3"),
+      ).rejects.toThrow(BusinessRuleViolationException);
+
+      expect(repo.create).not.toHaveBeenCalled();
     });
   });
 });

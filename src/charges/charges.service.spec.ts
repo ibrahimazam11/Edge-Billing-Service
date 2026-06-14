@@ -1400,4 +1400,222 @@ describe("ChargesService", () => {
       });
     });
   });
+
+  describe("mandate forwarding to Stripe", () => {
+    describe("executePaymentForInvoice", () => {
+      beforeEach(() => {
+        invoicesRepo.findById.mockResolvedValue(makeInvoiceRow());
+        chargesRepo.createWithIdempotency.mockResolvedValue({
+          charge: makeChargeRow(),
+          isDuplicate: false,
+        });
+        chargesRepo.updateStatus.mockResolvedValue(undefined);
+        invoicesRepo.update.mockResolvedValue(
+          makeInvoiceRow({ status: "paid" }),
+        );
+        mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
+        mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
+          "cus_stripe_1",
+        );
+        mockGateway.createCharge.mockResolvedValue(makeGatewayChargeResult());
+      });
+
+      it("forwards mandate_id from metadata when PM is bank_account", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            stripePaymentMethodId: "pm_bank_1",
+            metadata: { mandate_id: "mandate_xyz" },
+          }),
+        );
+
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-mandate-1");
+
+        expect(mockGateway.createCharge).toHaveBeenCalledWith(
+          expect.objectContaining({
+            paymentMethodId: "pm_bank_1",
+            mandateId: "mandate_xyz",
+          }),
+        );
+      });
+
+      it("forwards undefined when bank_account PM has null metadata", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            stripePaymentMethodId: "pm_bank_2",
+            metadata: null,
+          }),
+        );
+
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-mandate-2");
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+
+      it("forwards undefined when bank_account PM metadata has no mandate_id key", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            metadata: { other_key: "value" },
+          }),
+        );
+
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-mandate-3");
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+
+      it("never forwards mandate for card PMs even when metadata.mandate_id is set", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "card",
+            metadata: { mandate_id: "should_not_be_used" },
+          }),
+        );
+
+        await service.executePaymentForInvoice("inv-uuid-1", "corr-mandate-4");
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+    });
+
+    describe("createOneTimeCharge (executePaymentForInvoiceWithPaymentMethod)", () => {
+      const dto = {
+        customerId: "cust-uuid-1",
+        amountCents: 5000,
+        description: "Setup fee",
+      };
+      const idempotencyKey = "mandate-otc-idem";
+      const correlationId = "corr-mandate-otc";
+
+      beforeEach(() => {
+        mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
+        mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
+          "cus_stripe_1",
+        );
+        mockGateway.createCharge.mockResolvedValue(makeGatewayChargeResult());
+        chargesRepo.findByIdempotencyKey.mockResolvedValue(null);
+        chargesRepo.createWithIdempotency.mockResolvedValue({
+          charge: makeChargeRow(),
+          isDuplicate: false,
+        });
+        chargesRepo.findById.mockResolvedValue(makeChargeRow());
+        invoicesRepo.update.mockResolvedValue(
+          makeInvoiceRow({ status: "paid" }),
+        );
+        invoicesRepo.findByIdWithLineItems.mockResolvedValue({
+          invoice: makeInvoiceRow({ status: "paid" }),
+          lineItems: [],
+        });
+      });
+
+      it("forwards mandate_id for bank_account default PM", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            stripePaymentMethodId: "pm_bank_otc",
+            metadata: { mandate_id: "mandate_otc" },
+          }),
+        );
+
+        await service.createOneTimeCharge(dto, idempotencyKey, correlationId);
+
+        expect(mockGateway.createCharge).toHaveBeenCalledWith(
+          expect.objectContaining({
+            paymentMethodId: "pm_bank_otc",
+            mandateId: "mandate_otc",
+          }),
+        );
+      });
+
+      it("forwards undefined mandate for card default PM", async () => {
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({ type: "card" }),
+        );
+
+        await service.createOneTimeCharge(dto, idempotencyKey, correlationId);
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+    });
+
+    describe("extractMandateId defensive paths", () => {
+      const baseSetup = () => {
+        invoicesRepo.findById.mockResolvedValue(makeInvoiceRow());
+        chargesRepo.createWithIdempotency.mockResolvedValue({
+          charge: makeChargeRow(),
+          isDuplicate: false,
+        });
+        chargesRepo.updateStatus.mockResolvedValue(undefined);
+        invoicesRepo.update.mockResolvedValue(
+          makeInvoiceRow({ status: "paid" }),
+        );
+        mockCustomersService.findById.mockResolvedValue(makeCustomerResponse());
+        mockPaymentMethodsService.resolveGatewayCustomerId.mockResolvedValue(
+          "cus_stripe_1",
+        );
+        mockGateway.createCharge.mockResolvedValue(makeGatewayChargeResult());
+      };
+
+      it("does not forward mandate for non-Stripe gateway even if metadata.mandate_id present", async () => {
+        baseSetup();
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            gatewayProvider: "adyen",
+            metadata: { mandate_id: "irrelevant_for_adyen" },
+          }),
+        );
+
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-1",
+        );
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+
+      it("returns undefined when metadata is an array (corrupt shape)", async () => {
+        baseSetup();
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            metadata: [{ mandate_id: "x" }],
+          }),
+        );
+
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-2",
+        );
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+
+      it("returns undefined when mandate_id is a non-string", async () => {
+        baseSetup();
+        mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(
+          makePaymentMethodResponse({
+            type: "bank_account",
+            metadata: { mandate_id: 12345 },
+          }),
+        );
+
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-3",
+        );
+
+        const call = mockGateway.createCharge.mock.calls[0][0];
+        expect(call.mandateId).toBeUndefined();
+      });
+    });
+  });
 });
