@@ -1046,7 +1046,8 @@ export class ChargesService {
     gatewayProvider: string;
     metadata: unknown;
   }): string | undefined {
-    if (pm.gatewayProvider !== GatewayProvider.Stripe) return undefined;
+    if ((pm.gatewayProvider as GatewayProvider) !== GatewayProvider.Stripe)
+      return undefined;
     if (pm.type !== PAYMENT_METHOD_TYPE_BANK_ACCOUNT) return undefined;
     // Defensive: metadata is `jsonb` — could be any JSON shape if hand-edited or backfilled wrong.
     if (

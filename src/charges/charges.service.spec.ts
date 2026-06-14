@@ -1572,7 +1572,10 @@ describe("ChargesService", () => {
           }),
         );
 
-        await service.executePaymentForInvoice("inv-uuid-1", "corr-defensive-1");
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-1",
+        );
 
         const call = mockGateway.createCharge.mock.calls[0][0];
         expect(call.mandateId).toBeUndefined();
@@ -1587,7 +1590,10 @@ describe("ChargesService", () => {
           }),
         );
 
-        await service.executePaymentForInvoice("inv-uuid-1", "corr-defensive-2");
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-2",
+        );
 
         const call = mockGateway.createCharge.mock.calls[0][0];
         expect(call.mandateId).toBeUndefined();
@@ -1602,7 +1608,10 @@ describe("ChargesService", () => {
           }),
         );
 
-        await service.executePaymentForInvoice("inv-uuid-1", "corr-defensive-3");
+        await service.executePaymentForInvoice(
+          "inv-uuid-1",
+          "corr-defensive-3",
+        );
 
         const call = mockGateway.createCharge.mock.calls[0][0];
         expect(call.mandateId).toBeUndefined();

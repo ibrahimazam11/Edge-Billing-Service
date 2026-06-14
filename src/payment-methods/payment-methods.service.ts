@@ -70,7 +70,10 @@ export class PaymentMethodsService {
     // SetupIntent. This `attach()` path takes a pre-existing PM id and has no mandate to
     // persist — without one, subsequent ACH charges fail at Stripe. Route bank accounts
     // through confirmSetupAndAttach (POST /setup-intents/.../confirm) instead.
-    if (gatewayProvider === GatewayProvider.Stripe && gatewayResult.type !== "card") {
+    if (
+      gatewayProvider === GatewayProvider.Stripe &&
+      gatewayResult.type !== "card"
+    ) {
       throw new BusinessRuleViolationException(
         `Bank-account PMs cannot be attached via this endpoint; use the SetupIntent flow so the mandate is captured`,
       );
