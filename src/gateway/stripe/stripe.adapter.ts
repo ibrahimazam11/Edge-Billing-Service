@@ -177,6 +177,14 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
           },
           description: input.description,
           metadata: input.metadata,
+          // ACH (us_bank_account) requires the mandate from the SetupIntent that produced this
+          // payment method, plus off_session:true since these are merchant-initiated debits
+          // (automated invoice/salary billing, customer not present). Both omitted for cards —
+          // Stripe rejects mandate on non-mandate PM types, and off_session would force 3DS
+          // hard-failures on cards that currently succeed synchronously.
+          ...(input.mandateId
+            ? { mandate: input.mandateId, off_session: true }
+            : {}),
         },
         input.idempotencyKey
           ? { idempotencyKey: input.idempotencyKey }

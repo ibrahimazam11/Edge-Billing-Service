@@ -31,6 +31,7 @@ import type { InvoiceResponseDto } from "../invoices/dto/invoice-response.dto";
 import type { InvoiceLineItemResponseDto } from "../invoices/dto/invoice-line-item-response.dto";
 import { ChargesRepository } from "./charges.repository";
 import { InvoicesRepository } from "../invoices/invoices.repository";
+import { PAYMENT_METHOD_TYPE_BANK_ACCOUNT } from "../common/constants/payment-method-types";
 
 export const SUBSCRIPTIONS_SERVICE = Symbol("SUBSCRIPTIONS_SERVICE");
 @Injectable()
@@ -164,6 +165,7 @@ export class ChargesService {
           billingInvoiceId: invoiceId,
           monolithCustomerId: customer.monolithCustomerId ?? "",
         },
+        mandateId: this.extractMandateId(pm),
       });
 
       // 7a. Branch on gateway result status
@@ -448,6 +450,7 @@ export class ChargesService {
     let paymentMethodId: string;
     let stripePaymentMethodId: string;
     let pmGatewayProvider: GatewayProvider = GatewayProvider.Stripe;
+    let pmMandateId: string | undefined;
 
     if (dto.paymentMethodId) {
       // Look up the specific payment method by ID and verify customer ownership
@@ -460,6 +463,7 @@ export class ChargesService {
       paymentMethodId = pm.id;
       stripePaymentMethodId = pm.stripePaymentMethodId;
       pmGatewayProvider = pm.gatewayProvider as GatewayProvider;
+      pmMandateId = this.extractMandateId(pm);
     } else {
       const pm = await this.paymentMethodsService.getDefaultPaymentMethod(
         dto.customerId,
@@ -470,6 +474,7 @@ export class ChargesService {
       paymentMethodId = pm.id;
       stripePaymentMethodId = pm.stripePaymentMethodId;
       pmGatewayProvider = pm.gatewayProvider as GatewayProvider;
+      pmMandateId = this.extractMandateId(pm);
     }
 
     const gatewayCustomerId =
@@ -561,6 +566,7 @@ export class ChargesService {
       idempotencyKey,
       correlationId,
       pmGatewayProvider,
+      pmMandateId,
     );
 
     // 6. Load and return full response
@@ -681,6 +687,7 @@ export class ChargesService {
     idempotencyKey: string,
     correlationId: string,
     gatewayProvider: GatewayProvider = GatewayProvider.Stripe,
+    mandateId?: string,
   ): Promise<ChargeResultDto> {
     const chargeId = generateId();
     const now = new Date();
@@ -728,6 +735,7 @@ export class ChargesService {
           billingInvoiceId: invoiceId,
           monolithCustomerId,
         },
+        mandateId,
       });
 
       if (gatewayResult.status === "succeeded") {
@@ -1026,5 +1034,31 @@ export class ChargesService {
       createdAt: charge.createdAt.toISOString(),
       updatedAt: charge.updatedAt.toISOString(),
     };
+  }
+
+  /**
+   * Reads the Stripe mandate id persisted alongside an ACH payment method.
+   * Returns undefined for non-ACH PMs, non-Stripe gateways, or when metadata is missing —
+   * Stripe will reject the charge in the latter case until the mandate is backfilled.
+   */
+  private extractMandateId(pm: {
+    type: string;
+    gatewayProvider: string;
+    metadata: unknown;
+  }): string | undefined {
+    if (pm.gatewayProvider !== GatewayProvider.Stripe) return undefined;
+    if (pm.type !== PAYMENT_METHOD_TYPE_BANK_ACCOUNT) return undefined;
+    // Defensive: metadata is `jsonb` — could be any JSON shape if hand-edited or backfilled wrong.
+    if (
+      typeof pm.metadata !== "object" ||
+      pm.metadata === null ||
+      Array.isArray(pm.metadata)
+    ) {
+      return undefined;
+    }
+    const mandate = (pm.metadata as Record<string, unknown>).mandate_id;
+    return typeof mandate === "string" && mandate.length > 0
+      ? mandate
+      : undefined;
   }
 }
