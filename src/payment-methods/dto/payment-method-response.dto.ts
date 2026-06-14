@@ -12,8 +12,8 @@ export class PaymentMethodResponseDto {
   fallbackOrder!: number | null;
   gatewayProvider!: string;
   status!: string;
-  // Carries provider-specific extras such as { mandate_id } for ACH bank accounts.
-  // Read by ChargesService to forward the mandate to Stripe on charge.
+  // Exposed so the monolith's migration post-flight can verify ACH mandate continuity
+  // (it asserts `metadata.mandate_id` is present on the default PM after migration).
   metadata!: Record<string, unknown> | null;
   createdAt!: string;
   updatedAt!: string;
