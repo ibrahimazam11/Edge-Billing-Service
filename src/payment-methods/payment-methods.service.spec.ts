@@ -95,6 +95,8 @@ describe("PaymentMethodsService", () => {
       findByIdAndCustomer: jest.fn(),
       findActiveByCustomer: jest.fn(),
       findAllByCustomer: jest.fn(),
+      findByStripeIdAndCustomer: jest.fn().mockResolvedValue(null),
+      findByFingerprintAndCustomer: jest.fn().mockResolvedValue(null),
       getDefaultPaymentMethod: jest.fn(),
       getOrderedByCustomer: jest.fn(),
       findNextDefault: jest.fn(),
