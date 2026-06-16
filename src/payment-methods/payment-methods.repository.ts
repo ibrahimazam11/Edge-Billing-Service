@@ -35,6 +35,42 @@ export class PaymentMethodsRepository extends BaseRepository<
     return row ?? null;
   }
 
+  async findByStripeIdAndCustomer(
+    stripePaymentMethodId: string,
+    customerId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(
+        and(
+          eq(paymentMethods.stripePaymentMethodId, stripePaymentMethodId),
+          eq(paymentMethods.customerId, customerId),
+          eq(paymentMethods.status, "active"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async findByFingerprintAndCustomer(
+    fingerprint: string,
+    customerId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(
+        and(
+          eq(paymentMethods.fingerprint, fingerprint),
+          eq(paymentMethods.customerId, customerId),
+          eq(paymentMethods.status, "active"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   async findActiveByCustomer(
     customerId: string,
   ): Promise<PaymentMethod | null> {

@@ -1037,6 +1037,7 @@ describe("ChargesService", () => {
         lastFour: "1234",
         brand: "mastercard",
         bankName: null,
+        fingerprint: null,
         expiryMonth: 12,
         expiryYear: 2027,
         fallbackOrder: null,

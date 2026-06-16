@@ -32,6 +32,7 @@ const makePaymentMethodRow = (overrides = {}) => ({
   lastFour: "4242",
   brand: "visa",
   bankName: null,
+  fingerprint: null,
   expiryMonth: 12,
   expiryYear: 2027,
   metadata: null,
@@ -53,6 +54,7 @@ const makeGatewayResult = (overrides = {}) => ({
   expiryMonth: 12,
   expiryYear: 2027,
   isDefault: false,
+  fingerprint: null,
   ...overrides,
 });
 
