@@ -45,6 +45,70 @@ export function mapStripePaymentMethod(
   };
 }
 
+/**
+ * Maps a legacy Stripe customer source — `Stripe.BankAccount` (id prefix `ba_`),
+ * `Stripe.Card` (id prefix `card_`), or `Stripe.Source` (id prefix `src_`) — into the
+ * same `PaymentMethodResult` shape that `mapStripePaymentMethod` returns.
+ *
+ * Existing customers have these legacy IDs on Stripe and they are NOT returned by
+ * `stripe.paymentMethods.list({customer})`. They are only visible via
+ * `stripe.customers.listSources({customer})`. All three id prefixes work as
+ * `payment_method` on `invoices.pay()` per project decision; this mapper exists so the
+ * read path (listPaymentMethods) sees them too.
+ */
+export function mapStripeSource(
+  source: Stripe.BankAccount | Stripe.Card | Stripe.Source,
+  isDefault: boolean = false,
+): PaymentMethodResult {
+  const customerId =
+    typeof source.customer === "string"
+      ? source.customer
+      : (source.customer?.id ?? "");
+
+  if (source.object === "bank_account") {
+    const ba = source;
+    return {
+      id: ba.id,
+      customerId,
+      type: PAYMENT_METHOD_TYPE_BANK_ACCOUNT,
+      last4: ba.last4 ?? null,
+      brand: null,
+      bankName: ba.bank_name ?? null,
+      expiryMonth: null,
+      expiryYear: null,
+      isDefault,
+    };
+  }
+  if (source.object === "card") {
+    const card = source;
+    return {
+      id: card.id,
+      customerId,
+      type: PAYMENT_METHOD_TYPE_CARD,
+      last4: card.last4 ?? null,
+      brand: card.brand ?? null,
+      bankName: null,
+      expiryMonth: card.exp_month ?? null,
+      expiryYear: card.exp_year ?? null,
+      isDefault,
+    };
+  }
+  // Stripe.Source (legacy Sources API). Type may be 'card', 'ach_credit_transfer', etc.
+  const src = source;
+  const isCard = src.type === "card";
+  return {
+    id: src.id,
+    customerId,
+    type: isCard ? PAYMENT_METHOD_TYPE_CARD : PAYMENT_METHOD_TYPE_BANK_ACCOUNT,
+    last4: src.card?.last4 ?? null,
+    brand: src.card?.brand ?? null,
+    bankName: null,
+    expiryMonth: src.card?.exp_month ?? null,
+    expiryYear: src.card?.exp_year ?? null,
+    isDefault,
+  };
+}
+
 export function mapStripePaymentIntent(pi: Stripe.PaymentIntent): ChargeResult {
   return {
     id: pi.id,

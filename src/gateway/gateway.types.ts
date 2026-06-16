@@ -74,6 +74,8 @@ export interface CreateChargeInput {
   description?: string;
   metadata?: Record<string, string>;
   idempotencyKey?: string;
+  // Required by Stripe when charging us_bank_account (ACH); ignored for cards and non-Stripe gateways.
+  mandateId?: string | null;
 }
 
 export interface CreateRefundInput {

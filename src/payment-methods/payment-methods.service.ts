@@ -66,6 +66,19 @@ export class PaymentMethodsService {
       gatewayCustomerId,
     );
 
+    // ACH (us_bank_account) PMs require a Stripe mandate, which is only produced by a
+    // SetupIntent. This `attach()` path takes a pre-existing PM id and has no mandate to
+    // persist — without one, subsequent ACH charges fail at Stripe. Route bank accounts
+    // through confirmSetupAndAttach (POST /setup-intents/.../confirm) instead.
+    if (
+      gatewayProvider === GatewayProvider.Stripe &&
+      gatewayResult.type !== "card"
+    ) {
+      throw new BusinessRuleViolationException(
+        `Bank-account PMs cannot be attached via this endpoint; use the SetupIntent flow so the mandate is captured`,
+      );
+    }
+
     const existingActive =
       await this.paymentMethodsRepository.findActiveByCustomer(customerId);
     const isFirst = !existingActive;
@@ -414,23 +427,41 @@ export class PaymentMethodsService {
       .listPaymentMethods(gatewayCustomerId);
     const pmDetail = pmList.find((pm) => pm.id === result.paymentMethodId);
 
+    // Refuse to persist without a definitive type — silently defaulting to bank_account
+    // here would either mis-classify a card row or write a mandate against a non-ACH PM.
+    if (!pmDetail) {
+      throw new BusinessRuleViolationException(
+        `SetupIntent ${setupIntentId} attached ${result.paymentMethodId} but Stripe.listPaymentMethods did not return it for customer ${customerId}`,
+      );
+    }
+
     const id = generateId();
     const now = new Date();
+
+    const pmType =
+      pmDetail.type === "card"
+        ? PAYMENT_METHOD_TYPE_CARD
+        : PAYMENT_METHOD_TYPE_BANK_ACCOUNT;
+
+    // ACH charges via Stripe PaymentIntents require the mandate produced by the SetupIntent.
+    // Mirrors the migration writer pattern in customer-migration/writers/payment-settings.writer.ts.
+    const metadata =
+      pmType === PAYMENT_METHOD_TYPE_BANK_ACCOUNT && result.mandateId
+        ? { mandate_id: result.mandateId }
+        : null;
 
     const created = await this.paymentMethodsRepository.create({
       id,
       customerId,
       stripePaymentMethodId: result.paymentMethodId,
-      type:
-        pmDetail?.type === "card"
-          ? PAYMENT_METHOD_TYPE_CARD
-          : PAYMENT_METHOD_TYPE_BANK_ACCOUNT,
+      type: pmType,
       isDefault: true,
-      lastFour: pmDetail?.last4 ?? null,
-      brand: pmDetail?.brand ?? null,
-      bankName: pmDetail?.bankName ?? null,
-      expiryMonth: pmDetail?.expiryMonth ?? null,
-      expiryYear: pmDetail?.expiryYear ?? null,
+      lastFour: pmDetail.last4 ?? null,
+      brand: pmDetail.brand ?? null,
+      bankName: pmDetail.bankName ?? null,
+      expiryMonth: pmDetail.expiryMonth ?? null,
+      expiryYear: pmDetail.expiryYear ?? null,
+      metadata,
       gatewayProvider: GatewayProvider.Stripe,
       status: "active",
       createdAt: now,
@@ -442,6 +473,8 @@ export class PaymentMethodsService {
       setupIntentId,
       paymentMethodId: result.paymentMethodId,
       customerId,
+      pmType,
+      mandatePersisted: metadata !== null,
       correlationId,
     });
 
@@ -581,6 +614,7 @@ export class PaymentMethodsService {
       fallbackOrder: pm.fallbackOrder ?? null,
       gatewayProvider: pm.gatewayProvider,
       status: pm.status,
+      metadata: (pm.metadata as Record<string, unknown> | null) ?? null,
       createdAt: pm.createdAt.toISOString(),
       updatedAt: pm.updatedAt.toISOString(),
     };
