@@ -398,30 +398,7 @@ export class PaymentMethodsService {
       );
     }
 
-    // Detach old default PM if exists (one PM at a time, matching monolith behavior)
-    const existingDefault =
-      await this.paymentMethodsRepository.getDefaultPaymentMethod(customerId);
-
-    if (existingDefault) {
-      const pmGateway = this.gatewayRegistry.getAdapter(
-        existingDefault.gatewayProvider as GatewayProvider,
-      );
-      await pmGateway.detachPaymentMethod(
-        existingDefault.stripePaymentMethodId,
-      );
-      await this.paymentMethodsRepository.updateStatus(
-        existingDefault.id,
-        "detached",
-        { isDefault: false },
-      );
-    }
-
-    // Set as default on gateway
-    await this.gatewayRegistry
-      .getAdapter(GatewayProvider.Stripe)
-      .setDefaultPaymentMethod(gatewayCustomerId, result.paymentMethodId);
-
-    // Fetch PM details from gateway
+    // Fetch PM details first — we need type and fingerprint for the duplicate check below
     const pmList = await this.gatewayRegistry
       .getAdapter(GatewayProvider.Stripe)
       .listPaymentMethods(gatewayCustomerId);
@@ -433,6 +410,41 @@ export class PaymentMethodsService {
       throw new BusinessRuleViolationException(
         `SetupIntent ${setupIntentId} attached ${result.paymentMethodId} but Stripe.listPaymentMethods did not return it for customer ${customerId}`,
       );
+    }
+
+    // Reject duplicate bank account — Financial Connections issues a new pm_* ID every session
+    // even for the same underlying bank account, so we must deduplicate by fingerprint (stable
+    // identifier of the actual account). For cards, fall back to Stripe PM ID comparison.
+    if (pmDetail.fingerprint) {
+      const duplicate = await this.paymentMethodsRepository.findByFingerprintAndCustomer(
+        pmDetail.fingerprint,
+        customerId,
+      );
+      if (duplicate) {
+        throw new BusinessRuleViolationException(
+          `This bank account is already added to your account`,
+        );
+      }
+    } else {
+      const duplicate = await this.paymentMethodsRepository.findByStripeIdAndCustomer(
+        result.paymentMethodId,
+        customerId,
+      );
+      if (duplicate) {
+        throw new BusinessRuleViolationException(
+          `Payment method ${result.paymentMethodId} is already added to this account`,
+        );
+      }
+    }
+
+    // Only make the new PM default if the customer has no existing default PM
+    const existingDefault = await this.paymentMethodsRepository.getDefaultPaymentMethod(customerId);
+    const isFirstPm = !existingDefault;
+
+    if (isFirstPm) {
+      await this.gatewayRegistry
+        .getAdapter(GatewayProvider.Stripe)
+        .setDefaultPaymentMethod(gatewayCustomerId, result.paymentMethodId);
     }
 
     const id = generateId();
@@ -455,10 +467,11 @@ export class PaymentMethodsService {
       customerId,
       stripePaymentMethodId: result.paymentMethodId,
       type: pmType,
-      isDefault: true,
+      isDefault: isFirstPm,
       lastFour: pmDetail.last4 ?? null,
       brand: pmDetail.brand ?? null,
       bankName: pmDetail.bankName ?? null,
+      fingerprint: pmDetail.fingerprint ?? null,
       expiryMonth: pmDetail.expiryMonth ?? null,
       expiryYear: pmDetail.expiryYear ?? null,
       metadata,
@@ -478,11 +491,13 @@ export class PaymentMethodsService {
       correlationId,
     });
 
-    // Recalculate surcharge — new default PM may be a different type
-    await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
-      customerId,
-      correlationId ?? "pm-setup-confirm",
-    );
+    // Recalculate surcharge only when default PM changed
+    if (isFirstPm) {
+      await this.invoicesService?.recalculateSurchargeOnOpenInvoice(
+        customerId,
+        correlationId ?? "pm-setup-confirm",
+      );
+    }
 
     return this.toResponseDto(created);
   }

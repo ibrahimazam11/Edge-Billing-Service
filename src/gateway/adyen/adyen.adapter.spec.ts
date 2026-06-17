@@ -564,6 +564,7 @@ describe("AdyenAdapter", () => {
         expiryMonth: 12,
         expiryYear: 2027,
         isDefault: false,
+        fingerprint: null,
       });
     });
 
@@ -613,6 +614,7 @@ describe("AdyenAdapter", () => {
         expiryMonth: null,
         expiryYear: null,
         isDefault: false,
+        fingerprint: null,
       });
 
       expect(mockDeleteTokenForStoredPaymentDetails).toHaveBeenCalledWith(
@@ -659,6 +661,7 @@ describe("AdyenAdapter", () => {
         expiryMonth: 6,
         expiryYear: 2028,
         isDefault: false,
+        fingerprint: null,
       });
       expect(result[1]).toEqual({
         id: "pm-b",
@@ -670,6 +673,7 @@ describe("AdyenAdapter", () => {
         expiryMonth: null,
         expiryYear: null,
         isDefault: false,
+        fingerprint: null,
       });
 
       expect(mockGetTokensForStoredPaymentDetails).toHaveBeenCalledWith(
