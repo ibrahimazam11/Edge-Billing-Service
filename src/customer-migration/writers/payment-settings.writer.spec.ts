@@ -221,17 +221,18 @@ describe("PaymentSettingsWriter", () => {
     expect(result.status).toBe("succeeded");
 
     const pmInserts = inserts.filter(
-      (i) => (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId,
+      (i) =>
+        (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId,
     );
     const legacyRow = pmInserts.find(
       (i) =>
-        (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId ===
-        "ba_legacy_999",
+        (i.values as { stripePaymentMethodId?: string })
+          .stripePaymentMethodId === "ba_legacy_999",
     );
     const modernRow = pmInserts.find(
       (i) =>
-        (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId ===
-        "pm_modern_otherwise",
+        (i.values as { stripePaymentMethodId?: string })
+          .stripePaymentMethodId === "pm_modern_otherwise",
     );
     expect((legacyRow!.values as { isDefault: boolean }).isDefault).toBe(true);
     expect((modernRow!.values as { isDefault: boolean }).isDefault).toBe(false);
