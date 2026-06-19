@@ -177,4 +177,67 @@ describe("PaymentSettingsWriter", () => {
     expect(result.billingCustomerId).toBe("<dry-run>");
     expect(inserts).toHaveLength(0);
   });
+
+  it("C1: legacy ba_ default PM gets isDefault=true (pairs with mapStripeCustomer default_source fallback)", async () => {
+    // Adapter resolves defaultPaymentMethodId from customer.default_source for legacy
+    // customers; the writer must then tag the matching ba_ row — not the pm_ row.
+    mockGateway.getCustomer.mockResolvedValueOnce({
+      id: "cus_123",
+      email: "stripe@x.com",
+      name: "Legacy",
+      metadata: {},
+      createdAt: new Date(),
+      defaultPaymentMethodId: "ba_legacy_999",
+    });
+    mockGateway.listPaymentMethods.mockResolvedValueOnce([
+      {
+        id: "pm_modern_otherwise",
+        customerId: "cus_123",
+        type: "card",
+        last4: "4242",
+        brand: "visa",
+        bankName: null,
+        expiryMonth: 12,
+        expiryYear: 2030,
+        isDefault: false,
+      },
+      {
+        id: "ba_legacy_999",
+        customerId: "cus_123",
+        type: "us_bank_account",
+        last4: "6789",
+        brand: null,
+        bankName: "Legacy Bank",
+        expiryMonth: null,
+        expiryYear: null,
+        isDefault: false,
+      },
+    ]);
+
+    const result = await writer.write(
+      { customer: baseCustomer, paymentSettings: baseSettings },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+
+    const pmInserts = inserts.filter(
+      (i) => (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId,
+    );
+    const legacyRow = pmInserts.find(
+      (i) =>
+        (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId ===
+        "ba_legacy_999",
+    );
+    const modernRow = pmInserts.find(
+      (i) =>
+        (i.values as { stripePaymentMethodId?: string }).stripePaymentMethodId ===
+        "pm_modern_otherwise",
+    );
+    expect((legacyRow!.values as { isDefault: boolean }).isDefault).toBe(true);
+    expect((modernRow!.values as { isDefault: boolean }).isDefault).toBe(false);
+    // Mandate metadata should attach to the legacy default (ACH path).
+    expect((legacyRow!.values as { metadata: unknown }).metadata).toEqual({
+      mandate_id: "mandate_abc",
+    });
+  });
 });

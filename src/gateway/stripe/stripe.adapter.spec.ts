@@ -261,6 +261,54 @@ describe("StripeAdapter", () => {
       expect(result.defaultPaymentMethodId).toBe("pm_default_123");
     });
 
+    it("falls back to customer.default_source when invoice_settings.default_payment_method is null (legacy ba_/src_ customers)", async () => {
+      // Regression: ~813 legacy customers store their default on `default_source`. Without
+      // this fallback `defaultPaymentMethodId` was null and migration postflight rolled back
+      // because no BS payment_method row got isDefault=true.
+      mockStripeInstance.customers.retrieve.mockResolvedValue(
+        makeStripeCustomer({
+          invoice_settings: {
+            default_payment_method: null,
+          } as Stripe.Customer.InvoiceSettings,
+          default_source: "ba_legacy_456" as unknown as Stripe.CustomerSource,
+        }),
+      );
+
+      const result = await adapter.getCustomer("cus_123");
+
+      expect(result.defaultPaymentMethodId).toBe("ba_legacy_456");
+    });
+
+    it("prefers invoice_settings.default_payment_method over default_source when both are set", async () => {
+      mockStripeInstance.customers.retrieve.mockResolvedValue(
+        makeStripeCustomer({
+          invoice_settings: {
+            default_payment_method: "pm_modern_789",
+          } as Stripe.Customer.InvoiceSettings,
+          default_source: "ba_legacy_456" as unknown as Stripe.CustomerSource,
+        }),
+      );
+
+      const result = await adapter.getCustomer("cus_123");
+
+      expect(result.defaultPaymentMethodId).toBe("pm_modern_789");
+    });
+
+    it("returns null when neither invoice_settings.default_payment_method nor default_source is set", async () => {
+      mockStripeInstance.customers.retrieve.mockResolvedValue(
+        makeStripeCustomer({
+          invoice_settings: {
+            default_payment_method: null,
+          } as Stripe.Customer.InvoiceSettings,
+          default_source: null,
+        }),
+      );
+
+      const result = await adapter.getCustomer("cus_123");
+
+      expect(result.defaultPaymentMethodId).toBeNull();
+    });
+
     it("should throw PaymentFailedException when customer is deleted without double-wrapping", async () => {
       mockStripeInstance.customers.retrieve.mockResolvedValue({
         ...makeStripeCustomer(),
