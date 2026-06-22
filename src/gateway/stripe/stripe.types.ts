@@ -12,15 +12,26 @@ import {
 } from "../../common/constants/payment-method-types";
 
 export function mapStripeCustomer(customer: Stripe.Customer): CustomerResult {
-  const defaultPm = customer.invoice_settings?.default_payment_method;
+  // Legacy `ba_*` / `src_*` customers have their default on `customer.default_source`,
+  // not `invoice_settings.default_payment_method`. Without the fallback every payment
+  // method gets isDefault=false in BS and migration postflight rolls back.
+  const invoiceDefault = customer.invoice_settings?.default_payment_method;
+  const invoiceDefaultId =
+    typeof invoiceDefault === "string"
+      ? invoiceDefault
+      : (invoiceDefault?.id ?? null);
+  const sourceDefault = customer.default_source;
+  const sourceDefaultId =
+    typeof sourceDefault === "string"
+      ? sourceDefault
+      : (sourceDefault?.id ?? null);
   return {
     id: customer.id,
     email: customer.email ?? "",
     name: customer.name ?? null,
     metadata: (customer.metadata as Record<string, string>) ?? {},
     createdAt: new Date(customer.created * 1000),
-    defaultPaymentMethodId:
-      typeof defaultPm === "string" ? defaultPm : (defaultPm?.id ?? null),
+    defaultPaymentMethodId: invoiceDefaultId ?? sourceDefaultId,
   };
 }
 

@@ -162,7 +162,11 @@ export class CustomerMigrationOrchestratorService {
         name: "creditBalance",
         run: () =>
           this.creditBalanceWriter.write(
-            { billingCustomerId, latestPayroll: body.latestPayroll },
+            {
+              billingCustomerId,
+              latestPayroll: body.latestPayroll,
+              stripeCustomerBalanceCents: body.stripeCustomerBalanceCents,
+            },
             { dryRun, runId },
           ),
       },

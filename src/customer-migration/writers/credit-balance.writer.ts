@@ -9,6 +9,11 @@ export const MIGRATION_CREDIT_REASON = "monolith starting_balance migration";
 export interface CreditBalanceWriteInput {
   billingCustomerId: string;
   latestPayroll?: LatestPayrollInputDto | null;
+  // Live Stripe customer.balance in raw cents at migration time. Preferred over
+  // latestPayroll.startingBalance when present — the latter is a historical snapshot
+  // and can be stale relative to refunds / manual adjustments accumulated since the
+  // last paid payroll. Sign convention matches Stripe: negative = customer has credit.
+  stripeCustomerBalanceCents?: number | null;
 }
 
 @Injectable()
@@ -24,27 +29,43 @@ export class CreditBalanceWriter {
     input: CreditBalanceWriteInput,
     opts: { dryRun: boolean; runId: string },
   ): Promise<StepResult> {
-    const startingBalanceStr = input.latestPayroll?.startingBalance;
-    if (
-      startingBalanceStr === null ||
-      startingBalanceStr === undefined ||
-      startingBalanceStr === ""
-    ) {
-      return { status: "skipped", reason: "no_credit" };
-    }
-
-    // SIGN CONVENTION (see spec-billing-migration-production-blockers.md, C6):
-    // Monolith Customer_Payroll.Starting_Balance is the raw Stripe customer.balance value:
+    // C3 fix: prefer live Stripe customer.balance (sent in raw cents) over the
+    // legacy historical value derived from latestPayroll.startingBalance. The legacy
+    // path stays as the fallback so bodies built before this field existed still work.
+    //
+    // SIGN CONVENTION (raw Stripe customer.balance, identical on both inputs):
     //   < 0  → customer HAS credit (Stripe owes the customer); |value| = credit amount
     //   = 0  → no credit
     //   > 0  → customer OWES Stripe; BS does not track customer debt as credit
     // BS credit_balances.balance_cents stores positive cents (available customer credit).
     let rawCents: number;
-    try {
-      rawCents = toCents(startingBalanceStr);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { status: "failed", reason: "invalid_amount", error: msg };
+    if (
+      input.stripeCustomerBalanceCents !== null &&
+      input.stripeCustomerBalanceCents !== undefined
+    ) {
+      if (!Number.isFinite(input.stripeCustomerBalanceCents)) {
+        return {
+          status: "failed",
+          reason: "invalid_amount",
+          error: `stripeCustomerBalanceCents not finite (${input.stripeCustomerBalanceCents})`,
+        };
+      }
+      rawCents = Math.trunc(input.stripeCustomerBalanceCents);
+    } else {
+      const startingBalanceStr = input.latestPayroll?.startingBalance;
+      if (
+        startingBalanceStr === null ||
+        startingBalanceStr === undefined ||
+        startingBalanceStr === ""
+      ) {
+        return { status: "skipped", reason: "no_credit" };
+      }
+      try {
+        rawCents = toCents(startingBalanceStr);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { status: "failed", reason: "invalid_amount", error: msg };
+      }
     }
 
     if (rawCents > 0) {

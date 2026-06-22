@@ -187,6 +187,13 @@ export class MigrateCustomerBodyDto {
   @ValidateNested({ each: true })
   @Type(() => ChargeInputDto)
   charges!: ChargeInputDto[];
+
+  // Live Stripe customer.balance at migration time, in raw Stripe cents.
+  // Sign convention matches Stripe: negative = customer has credit; positive = customer owes
+  // Stripe; zero = no adjustment. Preferred by credit-balance writer over the legacy
+  // latestPayroll.startingBalance source. Optional for backwards compatibility with
+  // bodies built before this field existed.
+  @IsOptional() @IsInt() stripeCustomerBalanceCents?: number | null;
 }
 
 export class RollbackCustomerBodyDto {
