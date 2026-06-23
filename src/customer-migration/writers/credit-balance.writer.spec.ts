@@ -198,4 +198,106 @@ describe("CreditBalanceWriter", () => {
       MIGRATION_CREDIT_REASON,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // C3: live Stripe customer.balance preferred over latestPayroll.startingBalance
+  // -------------------------------------------------------------------------
+
+  it("C3: prefers stripeCustomerBalanceCents over latestPayroll.startingBalance when both present", async () => {
+    // Live balance says customer has $75 credit; stale historical says $50.
+    // The live value must win — historical drift is the whole reason for this field.
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        latestPayroll: {
+          totalAmount: "100",
+          startingBalance: "-50.00",
+          localCurrency: "usd",
+          payrollMonth: "2026-01-01",
+        },
+        stripeCustomerBalanceCents: -7500,
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+    expect(mockCreditsService.issueCreditNote).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 7500 }),
+      expect.any(String),
+    );
+  });
+
+  it("C3: falls back to latestPayroll.startingBalance when stripeCustomerBalanceCents absent", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        latestPayroll: {
+          totalAmount: "100",
+          startingBalance: "-50.00",
+          localCurrency: "usd",
+          payrollMonth: "2026-01-01",
+        },
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+    expect(mockCreditsService.issueCreditNote).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 5000 }),
+      expect.any(String),
+    );
+  });
+
+  it("C3: skips with no_credit when stripeCustomerBalanceCents is 0 (live override beats stale negative)", async () => {
+    // Customer used to have credit (recorded on the historical row) but the live
+    // Stripe balance is now zero — likely the credit was applied to a subsequent
+    // invoice. We must NOT re-create the credit in BS.
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        latestPayroll: {
+          totalAmount: "100",
+          startingBalance: "-50.00",
+          payrollMonth: "2026-01-01",
+        },
+        stripeCustomerBalanceCents: 0,
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toBe("no_credit");
+    expect(mockCreditsService.issueCreditNote).not.toHaveBeenCalled();
+  });
+
+  it("C3: skips with no_credit when stripeCustomerBalanceCents is positive (customer owes Stripe)", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        latestPayroll: {
+          totalAmount: "100",
+          startingBalance: "-50.00",
+          payrollMonth: "2026-01-01",
+        },
+        stripeCustomerBalanceCents: 2500,
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toBe("no_credit");
+    expect(mockCreditsService.issueCreditNote).not.toHaveBeenCalled();
+  });
+
+  it("C3: fails with invalid_amount when stripeCustomerBalanceCents is not finite", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        latestPayroll: {
+          totalAmount: "100",
+          payrollMonth: "2026-01-01",
+        },
+        stripeCustomerBalanceCents: Number.NaN,
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("failed");
+    expect((result as { reason?: string }).reason).toBe("invalid_amount");
+  });
 });
