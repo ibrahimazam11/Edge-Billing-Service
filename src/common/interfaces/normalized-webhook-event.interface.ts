@@ -5,7 +5,8 @@ export type NormalizedWebhookEventType =
   | "payment.failed"
   | "refund.completed"
   | "refund.failed"
-  | "chargeback.created";
+  | "chargeback.created"
+  | "mandate.updated";
 
 export interface NormalizedWebhookEvent {
   eventType: NormalizedWebhookEventType;

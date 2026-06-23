@@ -112,6 +112,11 @@ describe("WebhookProcessingService", () => {
         .mockResolvedValue({ monolithCustomerId: "mono-cust-1" }),
     };
 
+    const mockPaymentMethodsRepo = {
+      findByStripePaymentMethodId: jest.fn().mockResolvedValue(null),
+      updateStatus: jest.fn().mockResolvedValue(undefined),
+    };
+
     service = new WebhookProcessingService(
       mockDb as unknown as DrizzleDatabase,
       mockGatewayRegistry as unknown as GatewayRegistry,
@@ -122,6 +127,7 @@ describe("WebhookProcessingService", () => {
       mockInvoicesRepo as unknown as InvoicesRepository,
       mockCustomersRepo as any,
       mockWebhookEventsRepo as any,
+      mockPaymentMethodsRepo as any,
       mockSubscriptionsService,
     );
 
@@ -744,6 +750,318 @@ describe("WebhookProcessingService", () => {
     });
   });
 
+  describe("handleMandateUpdated", () => {
+    let mandateService: WebhookProcessingService;
+    let mockPmRepo: {
+      findByStripePaymentMethodId: jest.Mock;
+      updateStatus: jest.Mock;
+    };
+    let mockCustomersRepoMandate: { findById: jest.Mock };
+    let mockAdapterMandate: {
+      verifyAndParseWebhook: jest.Mock;
+      detachPaymentMethod: jest.Mock;
+    };
+    let mockGatewayRegistryMandate: { getAdapter: jest.Mock };
+
+    const mockBsPm = {
+      id: "bs-pm-uuid",
+      customerId: "bs-cust-uuid",
+      stripePaymentMethodId: "pm_bank_abc",
+      type: "bank_account",
+      status: "active",
+      isDefault: true,
+      metadata: { mandate_id: "mandate_abc" },
+      lastFour: "1234",
+      bankName: "Test Bank",
+      brand: null,
+      fingerprint: null,
+      expiryMonth: null,
+      expiryYear: null,
+      fallbackOrder: null,
+      gatewayProvider: "stripe",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const mockBsCustomer = {
+      id: "bs-cust-uuid",
+      monolithCustomerId: "mono-cust-abc",
+    };
+
+    function makeMandateEvent(
+      overrides: Partial<NormalizedWebhookEvent> = {},
+    ): NormalizedWebhookEvent {
+      return {
+        eventType: "mandate.updated",
+        gatewayProvider: GatewayProvider.Stripe,
+        gatewayEventId: "evt_mandate_123",
+        gatewayChargeId: "mandate_abc",
+        amount: 0,
+        currency: "",
+        status: "inactive",
+        metadata: { paymentMethodId: "pm_bank_abc" },
+        receivedAt: new Date(),
+        ...overrides,
+      };
+    }
+
+    function createMandatePayload(
+      status = "inactive",
+      stripeEventId = "evt_mandate_123",
+    ): StripeWebhookReceivedPayload {
+      return {
+        stripeEventId,
+        type: "mandate.updated",
+        data: { id: "mandate_abc", status, payment_method: "pm_bank_abc" },
+        signature: "sig_test_abc",
+      };
+    }
+
+    beforeEach(() => {
+      mockPmRepo = {
+        findByStripePaymentMethodId: jest.fn().mockResolvedValue(mockBsPm),
+        updateStatus: jest.fn().mockResolvedValue(undefined),
+      };
+
+      mockCustomersRepoMandate = {
+        findById: jest.fn().mockResolvedValue(mockBsCustomer),
+      };
+
+      mockAdapterMandate = {
+        verifyAndParseWebhook: jest.fn().mockResolvedValue(null),
+        detachPaymentMethod: jest.fn().mockResolvedValue({ id: "pm_bank_abc" }),
+      };
+
+      mockGatewayRegistryMandate = {
+        getAdapter: jest.fn().mockReturnValue(mockAdapterMandate),
+      };
+
+      mandateService = new WebhookProcessingService(
+        mockDb as unknown as DrizzleDatabase,
+        mockGatewayRegistryMandate as unknown as GatewayRegistry,
+        mockLedgerService as unknown as LedgerService,
+        mockSqsProducerService as unknown as SqsProducerService,
+        mockIdempotencyService as unknown as IdempotencyService,
+        mockChargesRepo as unknown as ChargesRepository,
+        mockInvoicesRepo as unknown as InvoicesRepository,
+        mockCustomersRepoMandate as any,
+        mockWebhookEventsRepo as any,
+        mockPmRepo as any,
+      );
+    });
+
+    it("should skip when mandate status is not inactive", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent({ status: "active" }),
+      );
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload("active"),
+        correlationId,
+      );
+
+      expect(mockPmRepo.findByStripePaymentMethodId).not.toHaveBeenCalled();
+      expect(mockPmRepo.updateStatus).not.toHaveBeenCalled();
+      expect(mockSqsProducerService.publish).not.toHaveBeenCalled();
+    });
+
+    it("should warn and skip when paymentMethodId is missing from event metadata", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent({ metadata: {} }),
+      );
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockPmRepo.findByStripePaymentMethodId).not.toHaveBeenCalled();
+      expect(mockPmRepo.updateStatus).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining("no payment_method"),
+        }),
+      );
+    });
+
+    it("should skip when PM not found in BS (non-BS customer)", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockPmRepo.findByStripePaymentMethodId.mockResolvedValue(null);
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockAdapterMandate.detachPaymentMethod).not.toHaveBeenCalled();
+      expect(mockPmRepo.updateStatus).not.toHaveBeenCalled();
+      expect(mockSqsProducerService.publish).not.toHaveBeenCalled();
+    });
+
+    it("should skip when PM type is not bank_account", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockPmRepo.findByStripePaymentMethodId.mockResolvedValue({
+        ...mockBsPm,
+        type: "card",
+      });
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockAdapterMandate.detachPaymentMethod).not.toHaveBeenCalled();
+      expect(mockPmRepo.updateStatus).not.toHaveBeenCalled();
+    });
+
+    it("should skip when PM is already detached (idempotent)", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockPmRepo.findByStripePaymentMethodId.mockResolvedValue({
+        ...mockBsPm,
+        status: "detached",
+      });
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockAdapterMandate.detachPaymentMethod).not.toHaveBeenCalled();
+      expect(mockPmRepo.updateStatus).not.toHaveBeenCalled();
+      expect(mockSqsProducerService.publish).not.toHaveBeenCalled();
+    });
+
+    it("should detach PM, mark detached, and publish mandate.deactivated on happy path", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockAdapterMandate.detachPaymentMethod).toHaveBeenCalledWith(
+        "pm_bank_abc",
+      );
+      expect(mockPmRepo.updateStatus).toHaveBeenCalledWith(
+        "bs-pm-uuid",
+        "detached",
+        expect.objectContaining({
+          metadata: expect.objectContaining({ mandate_id: null }),
+        }),
+      );
+      expect(mockSqsProducerService.publish).toHaveBeenCalledWith(
+        "mandate.deactivated",
+        {
+          customerId: "bs-cust-uuid",
+          monolithCustomerId: "mono-cust-abc",
+          paymentMethodId: "bs-pm-uuid",
+          stripePaymentMethodId: "pm_bank_abc",
+          mandateId: "mandate_abc",
+        },
+        correlationId,
+      );
+    });
+
+    it("should still mark detached and publish when Stripe detach fails (best-effort)", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockAdapterMandate.detachPaymentMethod.mockRejectedValue(
+        new Error("Stripe unavailable"),
+      );
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockPmRepo.updateStatus).toHaveBeenCalledWith(
+        "bs-pm-uuid",
+        "detached",
+        expect.objectContaining({
+          metadata: expect.objectContaining({ mandate_id: null }),
+        }),
+      );
+      expect(mockSqsProducerService.publish).toHaveBeenCalledWith(
+        "mandate.deactivated",
+        expect.objectContaining({ paymentMethodId: "bs-pm-uuid" }),
+        correlationId,
+      );
+    });
+
+    it("should detach PM in DB but not publish when customer not found in BS", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockCustomersRepoMandate.findById.mockResolvedValue(null);
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockPmRepo.updateStatus).toHaveBeenCalledWith(
+        "bs-pm-uuid",
+        "detached",
+        expect.anything(),
+      );
+      expect(mockSqsProducerService.publish).not.toHaveBeenCalled();
+    });
+
+    it("should preserve existing metadata fields when clearing mandate_id", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockPmRepo.findByStripePaymentMethodId.mockResolvedValue({
+        ...mockBsPm,
+        metadata: { mandate_id: "mandate_abc", account_type: "checking" },
+      });
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockPmRepo.updateStatus).toHaveBeenCalledWith(
+        "bs-pm-uuid",
+        "detached",
+        expect.objectContaining({
+          metadata: { mandate_id: null, account_type: "checking" },
+        }),
+      );
+    });
+
+    it("should be idempotent across duplicate webhook events", async () => {
+      mockAdapterMandate.verifyAndParseWebhook.mockResolvedValue(
+        makeMandateEvent(),
+      );
+      mockIdempotencyService.isProcessed
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+      await mandateService.processWebhookEvent(
+        createMandatePayload(),
+        correlationId,
+      );
+
+      expect(mockAdapterMandate.detachPaymentMethod).toHaveBeenCalledTimes(1);
+      expect(mockPmRepo.updateStatus).toHaveBeenCalledTimes(1);
+      expect(mockSqsProducerService.publish).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("service without SubscriptionsService", () => {
     it("should process webhook normally when SubscriptionsService not injected (optional dep)", async () => {
       const mockCustomersRepoNoSubs = {
@@ -761,6 +1079,7 @@ describe("WebhookProcessingService", () => {
         mockInvoicesRepo as unknown as InvoicesRepository,
         mockCustomersRepoNoSubs as any,
         mockWebhookEventsRepo as any,
+        { findByStripePaymentMethodId: jest.fn().mockResolvedValue(null), updateStatus: jest.fn() } as any,
       );
 
       mockAdapter.verifyAndParseWebhook.mockResolvedValue(makeSucceededEvent());

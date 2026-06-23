@@ -8,6 +8,7 @@ import { SubscriptionsService } from "../subscriptions/subscriptions.service";
 import { ChargesModule } from "../charges/charges.module";
 import { InvoicesModule } from "../invoices/invoices.module";
 import { CustomersModule } from "../customers/customers.module";
+import { PaymentMethodsModule } from "../payment-methods/payment-methods.module";
 import {
   WebhookProcessingService,
   SUBSCRIPTIONS_SERVICE_TOKEN,
@@ -24,6 +25,7 @@ import { WebhookEventsRepository } from "./webhook-events.repository";
     forwardRef(() => ChargesModule),
     forwardRef(() => InvoicesModule),
     forwardRef(() => CustomersModule),
+    forwardRef(() => PaymentMethodsModule),
   ],
   providers: [
     WebhookProcessingService,
