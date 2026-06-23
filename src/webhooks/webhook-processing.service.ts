@@ -11,6 +11,7 @@ import {
   WEBHOOK_PAYMENT_SUCCEEDED,
   WEBHOOK_PAYMENT_FAILED,
   WEBHOOK_REFUND_COMPLETED,
+  WEBHOOK_MANDATE_UPDATED,
 } from "../common/constants/webhook-event-types";
 import { LedgerService } from "../ledger/ledger.service";
 import { SqsProducerService } from "../integration/sqs/sqs-producer.service";
@@ -18,6 +19,7 @@ import { IdempotencyService } from "../integration/sqs/idempotency.service";
 import { ChargesRepository } from "../charges/charges.repository";
 import { InvoicesRepository } from "../invoices/invoices.repository";
 import { CustomersRepository } from "../customers/customers.repository";
+import { PaymentMethodsRepository } from "../payment-methods/payment-methods.repository";
 import { validateTransition } from "../common/utils/state-machine.util";
 import {
   INVOICE_TRANSITIONS,
@@ -35,6 +37,7 @@ const STRIPE_FALLBACK_EVENT_MAP: Record<string, NormalizedWebhookEventType> = {
   "payment_intent.succeeded": WEBHOOK_PAYMENT_SUCCEEDED,
   "payment_intent.payment_failed": WEBHOOK_PAYMENT_FAILED,
   "charge.refunded": WEBHOOK_REFUND_COMPLETED,
+  "mandate.updated": WEBHOOK_MANDATE_UPDATED,
 };
 
 const ADYEN_FALLBACK_EVENT_MAP: Record<string, NormalizedWebhookEventType> = {
@@ -61,6 +64,7 @@ export class WebhookProcessingService {
     private readonly invoicesRepository: InvoicesRepository,
     private readonly customersRepository: CustomersRepository,
     private readonly webhookEventsRepository: WebhookEventsRepository,
+    private readonly paymentMethodsRepository: PaymentMethodsRepository,
     @Optional()
     @Inject(SUBSCRIPTIONS_SERVICE_TOKEN)
     private readonly subscriptionsService?: {
@@ -175,6 +179,9 @@ export class WebhookProcessingService {
           break;
         case WEBHOOK_PAYMENT_FAILED:
           await this.handlePaymentFailed(normalizedEvent, correlationId);
+          break;
+        case WEBHOOK_MANDATE_UPDATED:
+          await this.handleMandateUpdated(normalizedEvent, correlationId);
           break;
         default:
           this.logger.warn({
@@ -446,6 +453,112 @@ export class WebhookProcessingService {
       },
       correlationId,
     );
+  }
+
+  private async handleMandateUpdated(
+    event: NormalizedWebhookEvent,
+    correlationId: string,
+  ): Promise<void> {
+    const mandateId = event.gatewayChargeId;
+    const mandateStatus = event.status;
+    const stripePaymentMethodId = event.metadata.paymentMethodId as
+      | string
+      | undefined;
+
+    if (mandateStatus !== "inactive") {
+      this.logger.log({
+        message: "mandate.updated: status not inactive, no action needed",
+        mandateId,
+        mandateStatus,
+        correlationId,
+      });
+      return;
+    }
+
+    if (!stripePaymentMethodId) {
+      this.logger.warn({
+        message: "mandate.updated: no payment_method on event, cannot identify PM",
+        mandateId,
+        correlationId,
+      });
+      return;
+    }
+
+    const pm =
+      await this.paymentMethodsRepository.findByStripePaymentMethodId(
+        stripePaymentMethodId,
+      );
+    if (!pm) {
+      // Non-BS customer — Stripe event arrives for all customers on the account
+      this.logger.log({
+        message: "mandate.updated: PM not found in BS (non-BS customer), skipping",
+        stripePaymentMethodId,
+        correlationId,
+      });
+      return;
+    }
+
+    if (pm.type !== "bank_account") {
+      this.logger.log({
+        message: "mandate.updated: PM is not a bank account, skipping",
+        pmId: pm.id,
+        type: pm.type,
+        correlationId,
+      });
+      return;
+    }
+
+    if (pm.status === "detached") {
+      this.logger.log({
+        message: "mandate.updated: PM already detached (idempotent)",
+        pmId: pm.id,
+        correlationId,
+      });
+      return;
+    }
+
+    // Detach from Stripe — best-effort, continue even if it fails
+    try {
+      const gateway = this.gatewayRegistry.getAdapter(GatewayProvider.Stripe);
+      await gateway.detachPaymentMethod(stripePaymentMethodId);
+    } catch (err) {
+      this.logger.error({
+        message: "mandate.updated: Stripe detach failed, continuing to mark detached in DB",
+        stripePaymentMethodId,
+        error: err instanceof Error ? err.message : String(err),
+        correlationId,
+      });
+    }
+
+    // Clear mandate_id from metadata and mark PM as detached
+    const existingMetadata = (pm.metadata as Record<string, unknown>) ?? {};
+    await this.paymentMethodsRepository.updateStatus(pm.id, "detached", {
+      metadata: { ...existingMetadata, mandate_id: null },
+    });
+
+    // Publish outbound event — monolith consumes this to send Suprsend notification
+    const customer = await this.customersRepository.findById(pm.customerId);
+    if (customer) {
+      await this.sqsProducerService.publish(
+        "mandate.deactivated",
+        {
+          customerId: pm.customerId,
+          monolithCustomerId: customer.monolithCustomerId ?? "",
+          paymentMethodId: pm.id,
+          stripePaymentMethodId,
+          mandateId,
+        },
+        correlationId,
+      );
+    }
+
+    this.logger.log({
+      message: "mandate.updated: PM detached and mandate.deactivated published",
+      pmId: pm.id,
+      customerId: pm.customerId,
+      mandateId,
+      correlationId,
+    });
   }
 
   /**

@@ -25,6 +25,7 @@ export const paymentMethods = pgTable(
     lastFour: varchar("last_four", { length: 4 }),
     brand: varchar("brand", { length: 50 }),
     bankName: varchar("bank_name", { length: 255 }),
+    fingerprint: varchar("fingerprint", { length: 255 }),
     expiryMonth: integer("expiry_month"),
     expiryYear: integer("expiry_year"),
     metadata: jsonb("metadata"),

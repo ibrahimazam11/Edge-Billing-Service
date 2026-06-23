@@ -42,6 +42,7 @@ import {
   WEBHOOK_PAYMENT_SUCCEEDED,
   WEBHOOK_PAYMENT_FAILED,
   WEBHOOK_REFUND_COMPLETED,
+  WEBHOOK_MANDATE_UPDATED,
 } from "../../common/constants/webhook-event-types";
 
 const MAX_RETRIES = 3;
@@ -51,6 +52,7 @@ const STRIPE_EVENT_MAP: Record<string, NormalizedWebhookEventType> = {
   "payment_intent.succeeded": WEBHOOK_PAYMENT_SUCCEEDED,
   "payment_intent.payment_failed": WEBHOOK_PAYMENT_FAILED,
   "charge.refunded": WEBHOOK_REFUND_COMPLETED,
+  "mandate.updated": WEBHOOK_MANDATE_UPDATED,
 };
 
 export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
@@ -451,9 +453,14 @@ export class StripeAdapter implements PaymentGateway, SetupIntentGateway {
       gatewayEventId: event.id,
       gatewayChargeId: dataObject.id as string,
       amount: dataObject.amount as number,
-      currency: (dataObject.currency as string).toLowerCase(),
+      currency: ((dataObject.currency as string | undefined) ?? "").toLowerCase(),
       status: dataObject.status as string,
-      metadata: (dataObject.metadata as Record<string, unknown>) ?? {},
+      metadata: {
+        ...((dataObject.metadata as Record<string, unknown>) ?? {}),
+        ...(typeof dataObject.payment_method === "string"
+          ? { paymentMethodId: dataObject.payment_method }
+          : {}),
+      },
       receivedAt: new Date(),
     };
 

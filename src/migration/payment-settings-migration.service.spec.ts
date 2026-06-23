@@ -70,6 +70,7 @@ describe("PaymentSettingsMigrationService", () => {
     expiryMonth: 12,
     expiryYear: 2027,
     isDefault: true,
+    fingerprint: null,
     ...overrides,
   });
 

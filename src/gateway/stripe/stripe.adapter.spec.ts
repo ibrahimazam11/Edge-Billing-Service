@@ -385,6 +385,7 @@ describe("StripeAdapter", () => {
         expiryMonth: 12,
         expiryYear: 2027,
         isDefault: false,
+        fingerprint: null,
       });
     });
   });
@@ -452,6 +453,7 @@ describe("StripeAdapter", () => {
         expiryMonth: 12,
         expiryYear: 2027,
         isDefault: false,
+        fingerprint: null,
       });
       expect(result[1]?.id).toBe("pm_456");
       expect(mockStripeInstance.paymentMethods.list).toHaveBeenCalledWith({

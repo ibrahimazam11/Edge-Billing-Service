@@ -53,6 +53,7 @@ export function mapStripePaymentMethod(
     expiryMonth: pm.card?.exp_month ?? null,
     expiryYear: pm.card?.exp_year ?? null,
     isDefault,
+    fingerprint: pm.us_bank_account?.fingerprint ?? pm.card?.fingerprint ?? null,
   };
 }
 
@@ -88,6 +89,7 @@ export function mapStripeSource(
       expiryMonth: null,
       expiryYear: null,
       isDefault,
+      fingerprint: ba.fingerprint ?? null,
     };
   }
   if (source.object === "card") {
@@ -102,6 +104,7 @@ export function mapStripeSource(
       expiryMonth: card.exp_month ?? null,
       expiryYear: card.exp_year ?? null,
       isDefault,
+      fingerprint: card.fingerprint ?? null,
     };
   }
   // Stripe.Source (legacy Sources API). Type may be 'card', 'ach_credit_transfer', etc.
@@ -117,6 +120,7 @@ export function mapStripeSource(
     expiryMonth: src.card?.exp_month ?? null,
     expiryYear: src.card?.exp_year ?? null,
     isDefault,
+    fingerprint: null,
   };
 }
 

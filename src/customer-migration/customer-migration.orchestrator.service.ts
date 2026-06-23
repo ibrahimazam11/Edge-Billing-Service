@@ -205,6 +205,9 @@ export class CustomerMigrationOrchestratorService {
               // P13: pass body customer so dry-run preview uses real
               // chargeDay/isPrepaid instead of hardcoded defaults.
               customer: body.customer,
+              // Round 2: monolith-sourced first-cycle dates. When present, writer skips
+              // computeDueDate/computeBillingCycle; when absent, falls back unchanged.
+              subscriptionTiming: body.subscriptionTiming ?? undefined,
             },
             { dryRun, runId },
           ),
