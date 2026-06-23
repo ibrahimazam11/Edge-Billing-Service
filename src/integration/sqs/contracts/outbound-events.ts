@@ -83,6 +83,14 @@ export interface RefundFailedPayload {
   failureReason: string;
 }
 
+export interface MandateDeactivatedPayload {
+  customerId: string;
+  monolithCustomerId: string;
+  paymentMethodId: string;
+  stripePaymentMethodId: string;
+  mandateId: string;
+}
+
 export interface OutboundEventMap {
   "payment.succeeded": PaymentSucceededPayload;
   "payment.failed": PaymentFailedPayload;
@@ -92,6 +100,7 @@ export interface OutboundEventMap {
   "subscription.state.changed": SubscriptionStateChangedPayload;
   "refund.succeeded": RefundSucceededPayload;
   "refund.failed": RefundFailedPayload;
+  "mandate.deactivated": MandateDeactivatedPayload;
 }
 
 export type OutboundEventType = keyof OutboundEventMap;

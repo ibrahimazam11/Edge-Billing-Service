@@ -17,6 +17,17 @@ export class PaymentMethodsRepository extends BaseRepository<
     super(db);
   }
 
+  async findByStripePaymentMethodId(
+    stripePaymentMethodId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.stripePaymentMethodId, stripePaymentMethodId))
+      .limit(1);
+    return row ?? null;
+  }
+
   async findByIdAndCustomer(
     id: string,
     customerId: string,
