@@ -12,15 +12,26 @@ import {
 } from "../../common/constants/payment-method-types";
 
 export function mapStripeCustomer(customer: Stripe.Customer): CustomerResult {
-  const defaultPm = customer.invoice_settings?.default_payment_method;
+  // Legacy `ba_*` / `src_*` customers have their default on `customer.default_source`,
+  // not `invoice_settings.default_payment_method`. Without the fallback every payment
+  // method gets isDefault=false in BS and migration postflight rolls back.
+  const invoiceDefault = customer.invoice_settings?.default_payment_method;
+  const invoiceDefaultId =
+    typeof invoiceDefault === "string"
+      ? invoiceDefault
+      : (invoiceDefault?.id ?? null);
+  const sourceDefault = customer.default_source;
+  const sourceDefaultId =
+    typeof sourceDefault === "string"
+      ? sourceDefault
+      : (sourceDefault?.id ?? null);
   return {
     id: customer.id,
     email: customer.email ?? "",
     name: customer.name ?? null,
     metadata: (customer.metadata as Record<string, string>) ?? {},
     createdAt: new Date(customer.created * 1000),
-    defaultPaymentMethodId:
-      typeof defaultPm === "string" ? defaultPm : (defaultPm?.id ?? null),
+    defaultPaymentMethodId: invoiceDefaultId ?? sourceDefaultId,
   };
 }
 
@@ -42,6 +53,7 @@ export function mapStripePaymentMethod(
     expiryMonth: pm.card?.exp_month ?? null,
     expiryYear: pm.card?.exp_year ?? null,
     isDefault,
+    fingerprint: pm.us_bank_account?.fingerprint ?? pm.card?.fingerprint ?? null,
   };
 }
 
@@ -77,6 +89,7 @@ export function mapStripeSource(
       expiryMonth: null,
       expiryYear: null,
       isDefault,
+      fingerprint: ba.fingerprint ?? null,
     };
   }
   if (source.object === "card") {
@@ -91,6 +104,7 @@ export function mapStripeSource(
       expiryMonth: card.exp_month ?? null,
       expiryYear: card.exp_year ?? null,
       isDefault,
+      fingerprint: card.fingerprint ?? null,
     };
   }
   // Stripe.Source (legacy Sources API). Type may be 'card', 'ach_credit_transfer', etc.
@@ -106,6 +120,7 @@ export function mapStripeSource(
     expiryMonth: src.card?.exp_month ?? null,
     expiryYear: src.card?.exp_year ?? null,
     isDefault,
+    fingerprint: null,
   };
 }
 

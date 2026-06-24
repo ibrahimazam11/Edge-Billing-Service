@@ -238,6 +238,7 @@ export class AdyenAdapter implements PaymentGateway {
           ? parseInt(storedPm.expiryYear, 10)
           : null,
         isDefault: false,
+        fingerprint: null,
       };
     });
   }
@@ -265,6 +266,7 @@ export class AdyenAdapter implements PaymentGateway {
         expiryMonth: null,
         expiryYear: null,
         isDefault: false,
+        fingerprint: null,
       };
     });
   }
@@ -308,6 +310,7 @@ export class AdyenAdapter implements PaymentGateway {
           expiryMonth: pm.expiryMonth ? parseInt(pm.expiryMonth, 10) : null,
           expiryYear: pm.expiryYear ? parseInt(pm.expiryYear, 10) : null,
           isDefault: false,
+          fingerprint: null,
         }),
       );
     });

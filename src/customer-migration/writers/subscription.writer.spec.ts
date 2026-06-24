@@ -673,4 +673,108 @@ describe("SubscriptionWriter", () => {
     expect(result.status).toBe("failed");
     expect(result.reason).toBe("invalid_charge_day");
   });
+
+  // -------------------------------------------------------------------------
+  // Round 2: subscriptionTiming override path
+  // -------------------------------------------------------------------------
+
+  it("Round 2: when subscriptionTiming is provided, uses those dates verbatim (skips computeDueDate/computeBillingCycle)", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+        subscriptionTiming: {
+          nextBillingDate: "2026-06-30T00:00:00.000Z",
+          billingPeriodStart: "2026-07-01T00:00:00.000Z",
+          billingPeriodEnd: "2026-08-01T00:00:00.000Z",
+        },
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+    const v = inserts[0] as {
+      nextBillingDate: Date;
+      billingPeriodStart: Date;
+      billingPeriodEnd: Date;
+    };
+    expect(v.nextBillingDate.toISOString()).toBe("2026-06-30T00:00:00.000Z");
+    expect(v.billingPeriodStart.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(v.billingPeriodEnd.toISOString()).toBe("2026-08-01T00:00:00.000Z");
+  });
+
+  it("Round 2: dry-run preview reflects the overridden timing", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+        subscriptionTiming: {
+          nextBillingDate: "2026-06-30T00:00:00.000Z",
+          billingPeriodStart: "2026-07-01T00:00:00.000Z",
+          billingPeriodEnd: "2026-08-01T00:00:00.000Z",
+        },
+      },
+      { dryRun: true, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+    const planned = (result as { planned: Record<string, string> }).planned;
+    expect(planned.nextBillingDate).toBe("2026-06-30T00:00:00.000Z");
+    expect(planned.billingPeriodStart).toBe("2026-07-01T00:00:00.000Z");
+    expect(planned.billingPeriodEnd).toBe("2026-08-01T00:00:00.000Z");
+  });
+
+  it("Round 2: fails invalid_subscription_timing when any ISO date is malformed", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+        subscriptionTiming: {
+          nextBillingDate: "not-a-date",
+          billingPeriodStart: "2026-07-01T00:00:00.000Z",
+          billingPeriodEnd: "2026-08-01T00:00:00.000Z",
+        },
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(result.status).toBe("failed");
+    expect((result as { reason?: string }).reason).toBe("invalid_subscription_timing");
+  });
+
+  it("Round 2 fallback: when subscriptionTiming is absent, existing computeDueDate/computeBillingCycle path runs unchanged", async () => {
+    // chargeDay=15 + prepaid → existing math: cycle = next month 15→15, due = next month 15.
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+        // No subscriptionTiming.
+      },
+      { dryRun: true, runId: "r1" },
+    );
+    expect(result.status).toBe("succeeded");
+    const planned = (result as { planned: Record<string, string> }).planned;
+    // Just confirm the fallback path populates these fields — the actual math is
+    // covered exhaustively by the computeBillingCycle / computeDueDate suites above.
+    expect(planned.nextBillingDate).toMatch(/T/);
+    expect(planned.billingPeriodStart).toMatch(/T/);
+    expect(planned.billingPeriodEnd).toMatch(/T/);
+  });
 });

@@ -11,6 +11,7 @@ import type {
   CustomerInputDto,
   LatestPayrollInputDto,
   PaymentSettingsInputDto,
+  SubscriptionTimingInputDto,
 } from "../dto/migrate-customer-body.dto";
 
 export interface SubscriptionWriteInput {
@@ -18,6 +19,9 @@ export interface SubscriptionWriteInput {
   paymentSettings: PaymentSettingsInputDto;
   latestPayroll?: LatestPayrollInputDto | null;
   customer?: CustomerInputDto;
+  // First-cycle dates sourced from monolith's latest Customer_Payroll row. When present,
+  // writer uses them verbatim instead of computeDueDate / computeBillingCycle.
+  subscriptionTiming?: SubscriptionTimingInputDto;
 }
 
 /**
@@ -235,13 +239,38 @@ export class SubscriptionWriter {
       // active.length === 0 → proceed to write below.
     }
 
-    const today = new Date();
-    const { billingPeriodStart, billingPeriodEnd } = computeBillingCycle(
-      chargeDay,
-      today,
-      isPrepaid,
-    );
-    const nextBillingDate = computeDueDate(chargeDay, today);
+    // Round 2: prefer monolith-sourced first-cycle dates when present (sourced from the
+    // latest Customer_Payroll row's Payment_Date + Payroll_Month). Falls back to BS-side
+    // compute helpers when absent so older callers / non-migration flows keep working.
+    let billingPeriodStart: Date;
+    let billingPeriodEnd: Date;
+    let nextBillingDate: Date;
+    const timing = input.subscriptionTiming;
+    if (timing) {
+      const parsedNext = new Date(timing.nextBillingDate);
+      const parsedStart = new Date(timing.billingPeriodStart);
+      const parsedEnd = new Date(timing.billingPeriodEnd);
+      if (
+        Number.isNaN(parsedNext.getTime()) ||
+        Number.isNaN(parsedStart.getTime()) ||
+        Number.isNaN(parsedEnd.getTime())
+      ) {
+        return {
+          status: "failed",
+          reason: "invalid_subscription_timing",
+          error: `subscriptionTiming has invalid ISO dates`,
+        };
+      }
+      nextBillingDate = parsedNext;
+      billingPeriodStart = parsedStart;
+      billingPeriodEnd = parsedEnd;
+    } else {
+      const today = new Date();
+      const cycle = computeBillingCycle(chargeDay, today, isPrepaid);
+      billingPeriodStart = cycle.billingPeriodStart;
+      billingPeriodEnd = cycle.billingPeriodEnd;
+      nextBillingDate = computeDueDate(chargeDay, today);
+    }
 
     const monolithSubId = paymentSettingsSubId(input.paymentSettings);
 

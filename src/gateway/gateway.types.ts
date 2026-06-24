@@ -17,6 +17,7 @@ export interface PaymentMethodResult {
   expiryMonth: number | null;
   expiryYear: number | null;
   isDefault: boolean;
+  fingerprint: string | null;
 }
 
 export interface ChargeResult {

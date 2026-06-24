@@ -157,6 +157,15 @@ export class ChargeInputDto {
   lineItems!: ChargeLineItemInputDto[];
 }
 
+export class SubscriptionTimingInputDto {
+  // ISO timestamps from monolith's authoritative Customer_Payroll row. When present, the
+  // subscription writer uses these verbatim and skips its own computeDueDate /
+  // computeBillingCycle helpers.
+  @IsDateString() nextBillingDate!: string;
+  @IsDateString() billingPeriodStart!: string;
+  @IsDateString() billingPeriodEnd!: string;
+}
+
 export class MigrateCustomerBodyDto {
   @IsOptional() @IsBoolean() dryRun?: boolean;
 
@@ -187,6 +196,21 @@ export class MigrateCustomerBodyDto {
   @ValidateNested({ each: true })
   @Type(() => ChargeInputDto)
   charges!: ChargeInputDto[];
+
+  // Live Stripe customer.balance at migration time, in raw Stripe cents.
+  // Sign convention matches Stripe: negative = customer has credit; positive = customer owes
+  // Stripe; zero = no adjustment. Preferred by credit-balance writer over the legacy
+  // latestPayroll.startingBalance source. Optional for backwards compatibility with
+  // bodies built before this field existed.
+  @IsOptional() @IsInt() stripeCustomerBalanceCents?: number | null;
+
+  // First-cycle subscription dates sourced from monolith's latest Customer_Payroll row.
+  // When present, subscription writer uses them verbatim; when absent, BS falls back to
+  // its computeDueDate / computeBillingCycle helpers.
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SubscriptionTimingInputDto)
+  subscriptionTiming?: SubscriptionTimingInputDto | null;
 }
 
 export class RollbackCustomerBodyDto {

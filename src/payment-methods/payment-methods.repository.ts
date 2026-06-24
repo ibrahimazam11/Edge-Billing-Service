@@ -17,6 +17,17 @@ export class PaymentMethodsRepository extends BaseRepository<
     super(db);
   }
 
+  async findByStripePaymentMethodId(
+    stripePaymentMethodId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.stripePaymentMethodId, stripePaymentMethodId))
+      .limit(1);
+    return row ?? null;
+  }
+
   async findByIdAndCustomer(
     id: string,
     customerId: string,
@@ -27,6 +38,42 @@ export class PaymentMethodsRepository extends BaseRepository<
       .where(
         and(
           eq(paymentMethods.id, id),
+          eq(paymentMethods.customerId, customerId),
+          eq(paymentMethods.status, "active"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async findByStripeIdAndCustomer(
+    stripePaymentMethodId: string,
+    customerId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(
+        and(
+          eq(paymentMethods.stripePaymentMethodId, stripePaymentMethodId),
+          eq(paymentMethods.customerId, customerId),
+          eq(paymentMethods.status, "active"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async findByFingerprintAndCustomer(
+    fingerprint: string,
+    customerId: string,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(
+        and(
+          eq(paymentMethods.fingerprint, fingerprint),
           eq(paymentMethods.customerId, customerId),
           eq(paymentMethods.status, "active"),
         ),

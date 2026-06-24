@@ -32,6 +32,7 @@ const makePaymentMethodRow = (overrides = {}) => ({
   lastFour: "4242",
   brand: "visa",
   bankName: null,
+  fingerprint: null,
   expiryMonth: 12,
   expiryYear: 2027,
   metadata: null,
@@ -53,6 +54,7 @@ const makeGatewayResult = (overrides = {}) => ({
   expiryMonth: 12,
   expiryYear: 2027,
   isDefault: false,
+  fingerprint: null,
   ...overrides,
 });
 
@@ -93,6 +95,8 @@ describe("PaymentMethodsService", () => {
       findByIdAndCustomer: jest.fn(),
       findActiveByCustomer: jest.fn(),
       findAllByCustomer: jest.fn(),
+      findByStripeIdAndCustomer: jest.fn().mockResolvedValue(null),
+      findByFingerprintAndCustomer: jest.fn().mockResolvedValue(null),
       getDefaultPaymentMethod: jest.fn(),
       getOrderedByCustomer: jest.fn(),
       findNextDefault: jest.fn(),
