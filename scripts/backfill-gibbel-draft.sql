@@ -94,4 +94,29 @@ JOIN invoices i ON i.id = li.invoice_id
 WHERE li.invoice_id = '019efa5a-833a-759f-92cc-b2b9efb8ec48'
 ORDER BY li.id;
 
+-- Fail loud: abort (rollback) unless the draft ended in exactly the expected
+-- state — both employee_cost rows reconcile (salary+platformFee+bonus =
+-- amount_cents), carry an employeeId, and the invoice is now linked to the
+-- subscription. This turns a wrong-database / already-finalized / no-op run into
+-- an error instead of a silent empty COMMIT.
+DO $$
+DECLARE ok_rows int;
+BEGIN
+  SELECT count(*) INTO ok_rows
+  FROM invoice_line_items li
+  JOIN invoices i ON i.id = li.invoice_id
+  WHERE li.invoice_id = '019efa5a-833a-759f-92cc-b2b9efb8ec48'
+    AND li.type = 'employee_cost'
+    AND (li.breakdown->>'salary')::int
+       + (li.breakdown->>'platformFee')::int
+       + (li.breakdown->>'bonus')::int = li.amount_cents
+    AND li.breakdown ? 'employeeId'
+    AND i.subscription_id = '019efa5a-837b-73e8-a88b-c4dfc2c6c942';
+  IF ok_rows <> 2 THEN
+    RAISE EXCEPTION
+      'Gibbel backfill verification failed: expected 2 reconciled + linked employee_cost rows, found %. Rolling back.',
+      ok_rows;
+  END IF;
+END $$;
+
 COMMIT;

@@ -349,6 +349,59 @@ describe("PayrollsWriter", () => {
     ).toBe(values.amountCents);
   });
 
+  it("warns (breakdown_invariant_violation) when components do not reconcile to amount, but still writes the row", async () => {
+    const warnSpy = jest
+      .spyOn(
+        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } })
+          .logger,
+        "warn",
+      )
+      .mockImplementation(() => undefined);
+    // baseSalary 1000 but paidGross 800 + fee 50 + bonus 0 = 850 ≠ 1000 → broken
+    // source invariant. amountCents stays the authoritative baseSalary (100000).
+    const r = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        payrolls: [
+          makePayroll({
+            employees: [
+              {
+                payrollId: "p1",
+                employeeId: "emp-3",
+                employeeName: "Carol",
+                baseSalary: "1000",
+                paidGrossSalary: "800",
+                bonus: "0",
+                platformFee: "50",
+              },
+            ],
+          }),
+        ],
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(r.status).toBe("succeeded");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "payrolls.writer.breakdown_invariant_violation",
+        employeeId: "emp-3",
+        salary: 80000,
+        platformFee: 5000,
+        bonus: 0,
+        amountCents: 100000,
+      }),
+    );
+    // The row is still persisted (migration must not abort on one dirty row);
+    // amountCents remains the authoritative customer-billed total.
+    const lineItem = inserts.find(
+      (i) => (i.values as { type?: string }).type === "employee_cost",
+    );
+    expect((lineItem!.values as { amountCents: number }).amountCents).toBe(
+      100000,
+    );
+    warnSpy.mockRestore();
+  });
+
   // ---------------------------------------------------------------------------
   // Status preservation (spec-billing-migration-status-preservation.md)
   // ---------------------------------------------------------------------------
