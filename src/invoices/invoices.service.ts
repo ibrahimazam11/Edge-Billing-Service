@@ -477,10 +477,25 @@ export class InvoicesService {
     return this.toResponseDto(result.invoice, result.lineItems);
   }
 
+  /**
+   * Safe-but-large default applied to a customer-scoped listing when the
+   * caller supplies no explicit limit. The monolith payment-history adapter
+   * fetches a customer's full invoice set and paginates client-side, so it
+   * must not be silently truncated to the generic page size. 1000 comfortably
+   * exceeds any single customer's invoice count while still bounding the query.
+   */
+  private static readonly CUSTOMER_LISTING_DEFAULT_LIMIT = 1000;
+
   async findAll(
     query: InvoiceQueryDto,
   ): Promise<PaginatedResult<InvoiceResponseDto>> {
-    const limit = query.limit ?? 20;
+    // No explicit limit: for a customer-scoped listing return the full set
+    // (capped large) rather than the generic 20-row page; otherwise keep the
+    // generic default. An explicit limit always wins and preserves the
+    // existing limit+1 cursor "has more" semantics below.
+    const limit =
+      query.limit ??
+      (query.customerId ? InvoicesService.CUSTOMER_LISTING_DEFAULT_LIMIT : 20);
 
     const results = await this.invoicesRepository.findAll(
       {
