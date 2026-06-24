@@ -178,6 +178,66 @@ describe("InvoicesRepository", () => {
 
       expect(selectChain.where).toHaveBeenCalledWith(expect.anything());
     });
+
+    it("should order by billing period then created_at (newest first), not by id", async () => {
+      selectChain.limit.mockResolvedValueOnce([]);
+
+      await repository.findAll({ customerId: "cust-123" }, 20);
+
+      // Two ordering args: billing_period_start DESC, then created_at DESC.
+      expect(selectChain.orderBy).toHaveBeenCalledTimes(1);
+      const orderArgs = selectChain.orderBy.mock.calls[0];
+      expect(orderArgs).toHaveLength(2);
+    });
+  });
+
+  describe("linkOpenRecurringDraftToSubscription", () => {
+    it("returns the number of rows linked", async () => {
+      updateChain.returning.mockResolvedValueOnce([{ id: "inv-123" }]);
+
+      const count = await repository.linkOpenRecurringDraftToSubscription(
+        "cust-123",
+        "sub-new",
+      );
+
+      expect(count).toBe(1);
+      expect(mockDb.update).toHaveBeenCalled();
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ subscriptionId: "sub-new" }),
+      );
+      expect(updateChain.where).toHaveBeenCalledWith(expect.anything());
+    });
+
+    it("returns 0 when no open recurring draft exists", async () => {
+      updateChain.returning.mockResolvedValueOnce([]);
+
+      const count = await repository.linkOpenRecurringDraftToSubscription(
+        "cust-123",
+        "sub-new",
+      );
+
+      expect(count).toBe(0);
+    });
+
+    it("uses the provided transaction client", async () => {
+      const txReturning = jest.fn().mockResolvedValue([{ id: "inv-123" }]);
+      const txUpdateChain = {
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        returning: txReturning,
+      };
+      const txMock = { update: jest.fn(() => txUpdateChain) };
+
+      const count = await repository.linkOpenRecurringDraftToSubscription(
+        "cust-123",
+        "sub-new",
+        txMock as never,
+      );
+
+      expect(count).toBe(1);
+      expect(txMock.update).toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("findPendingOnboarding", () => {

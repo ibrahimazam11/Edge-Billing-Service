@@ -5,6 +5,7 @@ import {
   eq,
   gte,
   inArray,
+  isNull,
   lt,
   lte,
   sql,
@@ -83,11 +84,17 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
     );
     if (cursorCondition) conditions.push(cursorCondition);
 
+    // Order by billing month, newest first — what the customer-facing payment
+    // history wants at the top of the list. `id` is a time-of-INSERT-ordered
+    // UUIDv7, so ordering by it surfaces the oldest-migrated invoices first
+    // (the inverse of what the UI expects). `created_at DESC` is a stable
+    // tiebreaker for rows sharing the same billing month. `billing_period_start`
+    // is NOT NULL (see schema), so no NULLS-LAST handling is required.
     return this.db
       .select()
       .from(invoices)
       .where(this.buildWhereClause(conditions))
-      .orderBy(invoices.id)
+      .orderBy(desc(invoices.billingPeriodStart), desc(invoices.createdAt))
       .limit(limit + 1);
   }
 
@@ -221,6 +228,41 @@ export class InvoicesRepository extends BaseRepository<typeof invoices> {
       .orderBy(desc(invoices.createdAt))
       .limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Backfills `subscription_id` on a customer's open recurring draft(s),
+   * linking them to a freshly-created BS subscription. Called by
+   * customer-migration's SubscriptionWriter, which creates the subscription
+   * LAST — after payroll invoices are written — so the going-forward draft
+   * (mapped by PayrollsWriter from the latest un-paid placeholder) is inserted
+   * with `subscription_id = NULL` and nothing links it to the new subscription.
+   *
+   * Scope is deliberately narrow: only `status='draft' AND type='recurring' AND
+   * subscription_id IS NULL`. Historical paid/finalized/void rows keep
+   * `subscription_id = NULL` — they were Stripe-managed cycles that pre-date BS
+   * owning the subscription; linking them would falsely imply BS billed them.
+   *
+   * Returns the number of rows linked (expected 0 or 1 per migrated customer).
+   */
+  async linkOpenRecurringDraftToSubscription(
+    customerId: string,
+    subscriptionId: string,
+    tx?: TransactionClient,
+  ): Promise<number> {
+    const rows = await this.conn(tx)
+      .update(invoices)
+      .set({ subscriptionId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          eq(invoices.type, "recurring"),
+          eq(invoices.status, "draft"),
+          isNull(invoices.subscriptionId),
+        ),
+      )
+      .returning({ id: invoices.id });
+    return rows.length;
   }
 
   async findDraftByCustomerId(customerId: string): Promise<Invoice | null> {

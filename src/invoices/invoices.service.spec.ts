@@ -759,13 +759,38 @@ describe("InvoicesService", () => {
       expect(result.cursor).toBeNull();
     });
 
-    it("should filter by customerId", async () => {
+    it("should return the full customer set (large default) when no limit is passed", async () => {
+      // Regression: BS used to silently cap a customer listing at 20, hiding
+      // the newest invoices from the monolith payment-history adapter (which
+      // fetches everything and paginates client-side).
       repo.findAll.mockResolvedValueOnce([]);
 
       await service.findAll({ customerId: "cust-123" });
 
       expect(repo.findAll).toHaveBeenCalledWith(
         expect.objectContaining({ customerId: "cust-123" }),
+        1000,
+      );
+    });
+
+    it("should honor an explicit limit for a customer listing (cursor semantics)", async () => {
+      repo.findAll.mockResolvedValueOnce([]);
+
+      await service.findAll({ customerId: "cust-123", limit: 5 });
+
+      expect(repo.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: "cust-123" }),
+        5,
+      );
+    });
+
+    it("should keep the generic 20 default for a non-customer listing", async () => {
+      repo.findAll.mockResolvedValueOnce([]);
+
+      await service.findAll({ status: "finalized" });
+
+      expect(repo.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "finalized" }),
         20,
       );
     });

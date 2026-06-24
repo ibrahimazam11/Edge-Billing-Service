@@ -5,6 +5,7 @@ import {
 } from "./subscription.writer";
 import type { SubscriptionsRepository } from "../../subscriptions/subscriptions.repository";
 import type { CustomersRepository } from "../../customers/customers.repository";
+import type { InvoicesRepository } from "../../invoices/invoices.repository";
 
 describe("computeBillingCycle", () => {
   // -----------------------------------------------------------------------
@@ -182,8 +183,9 @@ describe("SubscriptionWriter", () => {
   let writer: SubscriptionWriter;
   let mockSubsRepo: { findByCustomerAndStatuses: jest.Mock };
   let mockCustRepo: { findById: jest.Mock };
+  let mockInvoicesRepo: { linkOpenRecurringDraftToSubscription: jest.Mock };
   let inserts: unknown[];
-  let mockDb: { insert: jest.Mock };
+  let mockDb: { insert: jest.Mock; transaction: jest.Mock };
 
   beforeEach(() => {
     inserts = [];
@@ -197,7 +199,14 @@ describe("SubscriptionWriter", () => {
         isPrepaid: true,
       }),
     };
-    mockDb = {
+    mockInvoicesRepo = {
+      // Default: exactly one open recurring draft linked (the normal case).
+      linkOpenRecurringDraftToSubscription: jest.fn().mockResolvedValue(1),
+    };
+    // The real-run insert + draft-link run inside db.transaction(cb). The mock
+    // tx exposes insert(...).values(...) and is passed straight through to the
+    // (mocked) invoicesRepository.linkOpenRecurringDraftToSubscription.
+    const txMock = {
       insert: jest.fn(() => ({
         values: jest.fn((v: unknown) => {
           inserts.push(v);
@@ -205,10 +214,22 @@ describe("SubscriptionWriter", () => {
         }),
       })),
     };
+    mockDb = {
+      insert: jest.fn(() => ({
+        values: jest.fn((v: unknown) => {
+          inserts.push(v);
+          return Promise.resolve();
+        }),
+      })),
+      transaction: jest.fn(async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb(txMock),
+      ),
+    };
     writer = new SubscriptionWriter(
       mockDb as never,
       mockSubsRepo as unknown as SubscriptionsRepository,
       mockCustRepo as unknown as CustomersRepository,
+      mockInvoicesRepo as unknown as InvoicesRepository,
     );
   });
 
@@ -250,6 +271,87 @@ describe("SubscriptionWriter", () => {
     const md = (inserts[0] as { metadata: Record<string, unknown> }).metadata;
     expect(md.monolith_subscription_id).toBe("sub_xyz");
     expect(md.stripe_subscription_id).toBe("sub_xyz");
+  });
+
+  it("Fix 3: back-links the open recurring draft to the new subscription", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: {
+          totalAmount: "1000",
+          localCurrency: "usd",
+          payrollMonth: "2026-05-01",
+        },
+      },
+      { dryRun: false, runId: "r1" },
+    );
+
+    expect(result.status).toBe("succeeded");
+    // Linked to the subscription that was just inserted — never null, never a
+    // pre-existing id.
+    const insertedSubId = (inserts[0] as { id: string }).id;
+    expect(
+      mockInvoicesRepo.linkOpenRecurringDraftToSubscription,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      mockInvoicesRepo.linkOpenRecurringDraftToSubscription,
+    ).toHaveBeenCalledWith("bc-1", insertedSubId, expect.anything());
+    expect(
+      (result as unknown as { data: { linkedDraftCount: number } }).data
+        .linkedDraftCount,
+    ).toBe(1);
+  });
+
+  it("Fix 3: does NOT back-link on dry-run (no subscription is written)", async () => {
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+      },
+      { dryRun: true, runId: "r1" },
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(inserts).toHaveLength(0);
+    expect(
+      mockInvoicesRepo.linkOpenRecurringDraftToSubscription,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("Fix 3: surfaces linkedDraftCount=0 without failing the step (warns on anomaly)", async () => {
+    mockInvoicesRepo.linkOpenRecurringDraftToSubscription.mockResolvedValueOnce(
+      0,
+    );
+    const result = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        paymentSettings: {
+          stripeCustomerId: "cus_1",
+          paymentMethodType: "ACH",
+          subscriptionId: "sub_xyz",
+        },
+        latestPayroll: { totalAmount: "1000", payrollMonth: "2026-05-01" },
+      },
+      { dryRun: false, runId: "r1" },
+    );
+
+    // Missing placeholder is an anomaly worth surfacing, but it must not roll
+    // back an otherwise-successful subscription write.
+    expect(result.status).toBe("succeeded");
+    expect(
+      (result as unknown as { data: { linkedDraftCount: number } }).data
+        .linkedDraftCount,
+    ).toBe(0);
   });
 
   it("B3: skips when existing active sub has matching monolith_subscription_id", async () => {

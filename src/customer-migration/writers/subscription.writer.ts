@@ -5,6 +5,7 @@ import { subscriptions } from "../../database/schema/subscriptions";
 import { generateId } from "../../common/utils/uuid.util";
 import { SubscriptionsRepository } from "../../subscriptions/subscriptions.repository";
 import { CustomersRepository } from "../../customers/customers.repository";
+import { InvoicesRepository } from "../../invoices/invoices.repository";
 import { toCents, DRY_RUN_PLACEHOLDER_ID, type StepResult } from "../helpers";
 import type {
   CustomerInputDto,
@@ -115,6 +116,7 @@ export class SubscriptionWriter {
     @Inject(DRIZZLE_PROVIDER) private readonly db: DrizzleDatabase,
     private readonly subscriptionsRepository: SubscriptionsRepository,
     private readonly customersRepository: CustomersRepository,
+    private readonly invoicesRepository: InvoicesRepository,
   ) {}
 
   async write(
@@ -264,27 +266,47 @@ export class SubscriptionWriter {
     const now = new Date();
     const subscriptionId = generateId();
 
+    let linkedDraftCount = 0;
     try {
-      await this.db.insert(subscriptions).values({
-        id: subscriptionId,
-        customerId: input.billingCustomerId,
-        planName: "monolith-migration",
-        status: "active",
-        amountCents,
-        currency,
-        billingInterval: "monthly",
-        billingPeriodStart,
-        billingPeriodEnd,
-        nextBillingDate,
-        stripeSubscriptionId: monolithSubId ?? null,
-        metadata: {
-          monolith_subscription_id: monolithSubId ?? null,
-          stripe_subscription_id: monolithSubId ?? null,
-          monolith_subscription_item_id:
-            input.paymentSettings.subscriptionItemId ?? null,
-        },
-        createdAt: now,
-        updatedAt: now,
+      await this.db.transaction(async (tx) => {
+        await tx.insert(subscriptions).values({
+          id: subscriptionId,
+          customerId: input.billingCustomerId,
+          planName: "monolith-migration",
+          status: "active",
+          amountCents,
+          currency,
+          billingInterval: "monthly",
+          billingPeriodStart,
+          billingPeriodEnd,
+          nextBillingDate,
+          stripeSubscriptionId: monolithSubId ?? null,
+          metadata: {
+            monolith_subscription_id: monolithSubId ?? null,
+            stripe_subscription_id: monolithSubId ?? null,
+            monolith_subscription_item_id:
+              input.paymentSettings.subscriptionItemId ?? null,
+          },
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        // Back-link the customer's open recurring draft to the subscription we
+        // just created. Migration writes payroll invoices (PayrollsWriter)
+        // BEFORE this step, so the going-forward draft — the next-cycle
+        // un-paid placeholder mapped to status='draft' — is inserted with
+        // subscription_id = NULL. This is the single invoice BS now owns and
+        // bills, so it must point at the subscription for the scheduler and
+        // payroll.calculated handlers to resolve it. Historical
+        // paid/finalized/void rows are intentionally left NULL (Stripe-managed
+        // cycles predating BS ownership). Atomic with the insert so we never
+        // have a subscription without its draft linked.
+        linkedDraftCount =
+          await this.invoicesRepository.linkOpenRecurringDraftToSubscription(
+            input.billingCustomerId,
+            subscriptionId,
+            tx,
+          );
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -296,6 +318,19 @@ export class SubscriptionWriter {
       return { status: "failed", reason: "insert_failed", error: msg };
     }
 
+    // Exactly one open recurring draft per migrated customer is expected (the
+    // next-cycle placeholder). 0 → the placeholder was absent for this
+    // customer; >1 → duplicate drafts. Neither blocks migration, but both are
+    // anomalies worth surfacing for operator review.
+    if (linkedDraftCount !== 1) {
+      this.logger.warn({
+        action: "customer-migration.subscription.draft_link_unexpected_count",
+        billingCustomerId: input.billingCustomerId,
+        subscriptionId,
+        linkedDraftCount,
+      });
+    }
+
     return {
       status: "succeeded",
       data: {
@@ -304,6 +339,7 @@ export class SubscriptionWriter {
         currency,
         billingPeriodStart: billingPeriodStart.toISOString(),
         billingPeriodEnd: billingPeriodEnd.toISOString(),
+        linkedDraftCount,
       },
     };
   }
