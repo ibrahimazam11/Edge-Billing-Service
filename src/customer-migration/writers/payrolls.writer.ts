@@ -218,6 +218,32 @@ export class PayrollsWriter {
         const empTotal = baseCents;
         employeeSumCents += empTotal;
 
+        // Emit the BS-native breakdown shape (subscriptions.service
+        // buildEmployeeLineItems): { employeeId, salary, platformFee, bonus,
+        // raise, discount } in cents. `salary` is the employee gross — monolith
+        // paidGrossSalary — NOT the customer-billed total (baseSalary, which
+        // already bundles fee+bonus). When paidGross is null (pre-platform-fee
+        // historical rows) reconstruct it from baseSalary so the native invariant
+        // `salary + platformFee + bonus === amountCents` still holds.
+        const platformFee = platformFeeCents ?? 0;
+        const bonus = bonusCents ?? 0;
+        const salary = paidGrossSalaryCents ?? baseCents - platformFee - bonus;
+
+        // Defensive guard: a migrated row must never reach the DB violating the
+        // native invariant, or the stale-draft fallback (subscriptions.service)
+        // would recompute a wrong amount when monolith payroll fetch fails.
+        if (salary + platformFee + bonus !== empTotal) {
+          this.logger.warn({
+            action: "payrolls.writer.breakdown_invariant_violation",
+            monolithPayrollId: payroll.customerPayrollId,
+            employeeId: emp.employeeId ?? null,
+            salary,
+            platformFee,
+            bonus,
+            amountCents: empTotal,
+          });
+        }
+
         lineItemRows.push({
           id: opts.dryRun ? "<dry-run-li>" : generateId(),
           invoiceId,
@@ -226,10 +252,12 @@ export class PayrollsWriter {
           amountCents: empTotal,
           quantity: 1,
           breakdown: {
-            baseSalaryCents: baseCents,
-            paidGrossSalaryCents,
-            bonusCents,
-            platformFeeCents,
+            employeeId: emp.employeeId ?? null,
+            salary,
+            platformFee,
+            bonus,
+            raise: 0,
+            discount: 0,
           },
           createdAt: now,
         });

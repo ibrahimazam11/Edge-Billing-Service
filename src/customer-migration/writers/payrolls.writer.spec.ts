@@ -17,6 +17,7 @@ function makePayroll(over: Partial<PayrollInputDto> = {}): PayrollInputDto {
     employees: [
       {
         payrollId: "p1",
+        employeeId: "emp-1",
         employeeName: "Alice",
         baseSalary: "1000",
         paidGrossSalary: "900",
@@ -269,7 +270,7 @@ describe("PayrollsWriter", () => {
     expect(meta.monolith_invoice_id).toBeNull();
   });
 
-  it("emits cost-component breakdown on employee line items", async () => {
+  it("emits native breakdown shape on employee line items, reconciling to amount_cents", async () => {
     const r = await writer.write(
       { billingCustomerId: "bc-1", payrolls: [makePayroll()] },
       { dryRun: false, runId: "r1" },
@@ -279,13 +280,126 @@ describe("PayrollsWriter", () => {
       (i) => (i.values as { type?: string }).type === "employee_cost",
     );
     expect(lineItem).toBeDefined();
-    const breakdown = (
-      lineItem!.values as { breakdown: Record<string, unknown> }
-    ).breakdown;
-    expect(breakdown.baseSalaryCents).toBe(100000);
-    expect(breakdown.paidGrossSalaryCents).toBe(90000);
-    expect(breakdown.bonusCents).toBe(5000);
-    expect(breakdown.platformFeeCents).toBe(5000);
+    const values = lineItem!.values as {
+      amountCents: number;
+      breakdown: Record<string, unknown>;
+    };
+    // Must match the BS-native shape (subscriptions.service buildEmployeeLineItems):
+    // salary is the employee gross (= paidGrossSalary), platformFee/bonus are markups
+    // on top. baseSalaryCents/paidGrossSalaryCents are NOT emitted anymore.
+    expect(values.breakdown).toEqual({
+      employeeId: "emp-1",
+      salary: 90000,
+      platformFee: 5000,
+      bonus: 5000,
+      raise: 0,
+      discount: 0,
+    });
+    // Native invariant: salary + platformFee + bonus === amount_cents.
+    expect(
+      (values.breakdown.salary as number) +
+        (values.breakdown.platformFee as number) +
+        (values.breakdown.bonus as number),
+    ).toBe(values.amountCents);
+  });
+
+  it("reconstructs salary from baseSalary when paidGrossSalary/fee/bonus are null (pre-platform-fee rows), preserving the invariant", async () => {
+    const r = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        payrolls: [
+          makePayroll({
+            employees: [
+              {
+                payrollId: "p1",
+                employeeId: "emp-2",
+                employeeName: "Bob",
+                baseSalary: "1000",
+                paidGrossSalary: null,
+                bonus: null,
+                platformFee: null,
+              },
+            ],
+          }),
+        ],
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(r.status).toBe("succeeded");
+    const lineItem = inserts.find(
+      (i) => (i.values as { type?: string }).type === "employee_cost",
+    );
+    const values = lineItem!.values as {
+      amountCents: number;
+      breakdown: Record<string, unknown>;
+    };
+    // paidGross/fee/bonus null → salary reconstructed = base - 0 - 0 = base.
+    expect(values.breakdown).toEqual({
+      employeeId: "emp-2",
+      salary: 100000,
+      platformFee: 0,
+      bonus: 0,
+      raise: 0,
+      discount: 0,
+    });
+    expect(
+      (values.breakdown.salary as number) +
+        (values.breakdown.platformFee as number) +
+        (values.breakdown.bonus as number),
+    ).toBe(values.amountCents);
+  });
+
+  it("warns (breakdown_invariant_violation) when components do not reconcile to amount, but still writes the row", async () => {
+    const warnSpy = jest
+      .spyOn(
+        (writer as unknown as { logger: { warn: (...a: unknown[]) => void } })
+          .logger,
+        "warn",
+      )
+      .mockImplementation(() => undefined);
+    // baseSalary 1000 but paidGross 800 + fee 50 + bonus 0 = 850 ≠ 1000 → broken
+    // source invariant. amountCents stays the authoritative baseSalary (100000).
+    const r = await writer.write(
+      {
+        billingCustomerId: "bc-1",
+        payrolls: [
+          makePayroll({
+            employees: [
+              {
+                payrollId: "p1",
+                employeeId: "emp-3",
+                employeeName: "Carol",
+                baseSalary: "1000",
+                paidGrossSalary: "800",
+                bonus: "0",
+                platformFee: "50",
+              },
+            ],
+          }),
+        ],
+      },
+      { dryRun: false, runId: "r1" },
+    );
+    expect(r.status).toBe("succeeded");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "payrolls.writer.breakdown_invariant_violation",
+        employeeId: "emp-3",
+        salary: 80000,
+        platformFee: 5000,
+        bonus: 0,
+        amountCents: 100000,
+      }),
+    );
+    // The row is still persisted (migration must not abort on one dirty row);
+    // amountCents remains the authoritative customer-billed total.
+    const lineItem = inserts.find(
+      (i) => (i.values as { type?: string }).type === "employee_cost",
+    );
+    expect((lineItem!.values as { amountCents: number }).amountCents).toBe(
+      100000,
+    );
+    warnSpy.mockRestore();
   });
 
   // ---------------------------------------------------------------------------

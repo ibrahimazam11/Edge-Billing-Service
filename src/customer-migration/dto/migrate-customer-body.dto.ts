@@ -79,6 +79,13 @@ export class LatestPayrollInputDto {
 
 export class PayrollEmployeeInputDto {
   @IsString() @IsNotEmpty() payrollId!: string;
+
+  // Monolith Employee_ID. Persisted into the line-item breakdown so migrated
+  // rows match the BS-native shape and downstream joins (payslip lookup, audit,
+  // reconciliation) can map a line item back to an employee. Nullable —
+  // historical payroll rows may lack an associated employee.
+  @IsOptional() @IsString() employeeId?: string | null;
+
   @IsString() @IsNotEmpty() employeeName!: string;
   @IsString() @IsNotEmpty() baseSalary!: string;
 
